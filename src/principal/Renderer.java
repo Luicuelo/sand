@@ -45,6 +45,7 @@ class Renderer {
 	private int hitDirection = 0; // Direction of the hit: 1=right, -1=left, 0=no hit
 	private int hitForce = 0; // String of the hit
     private int hitCount = 0;
+	private boolean spacePressed = false;
 
 	/**
 	 * Internal palette class for managing the colors used in the simulation.
@@ -71,9 +72,13 @@ class Renderer {
 			colors[0][3] = (byte) 255;
 
 			for (int a = 1; a < PALETTE_SIZE; a++) {
-				colors[a][0] = (byte) (50 + (Math.random() * 100));
-				colors[a][1] = (byte) (50 + (Math.random() * 100));
-				colors[a][2] = (byte) (50 + (Math.random() * 100));
+				double hue = Math.random() * 360.0;
+				double saturation = 0.7 + Math.random() * 0.3;
+				double brightness = 0.7 + Math.random() * 0.3;
+				javafx.scene.paint.Color c = javafx.scene.paint.Color.hsb(hue, saturation, brightness);
+				colors[a][0] = (byte) (int) (c.getBlue() * 255);
+				colors[a][1] = (byte) (int) (c.getGreen() * 255);
+				colors[a][2] = (byte) (int) (c.getRed() * 255);
 				colors[a][3] = (byte) 255;
 			}
 
@@ -148,12 +153,23 @@ class Renderer {
 	public void updateRegion() {
 		// Create point from mouse only every two frames
 		if (mouseInside && frameCounter % 2 == 0) {
+			int actualColor = (frameCounter / 250) % 254 + 1;
 			int cellX = mouseX / PIXEL_SIZE;
 			int cellY = mouseY / PIXEL_SIZE;
-			// Check boundaries before assignment
-			if (cellX >= 0 && cellX < cellWidth && cellY >= 0 && cellY < cellHeight && cellData[cellY][cellX] == 0) {
-				int actualColor = (frameCounter / 500) % 254 + 1;
-				cellData[cellY][cellX] = actualColor;
+			if (spacePressed) {
+				for (int dy = -2; dy <= 2; dy++) {
+					for (int dx = -2; dx <= 2; dx++) {
+						int cx = cellX + dx;
+						int cy = cellY + dy;
+						if (cx >= 0 && cx < cellWidth && cy >= 0 && cy < cellHeight && cellData[cy][cx] == 0) {
+							cellData[cy][cx] = actualColor;
+						}
+					}
+				}
+			} else {
+				if (cellX >= 0 && cellX < cellWidth && cellY >= 0 && cellY < cellHeight && cellData[cellY][cellX] == 0) {
+					cellData[cellY][cellX] = actualColor;
+				}
 			}
 		}
 		frameCounter++;
@@ -172,7 +188,7 @@ class Renderer {
 	 * </p>
 	 */
 	public void iteration() {
-		int actualColor = (frameCounter / 500) % 254 + 1;
+		int actualColor = (frameCounter / 100) % 254 + 1;
 
         if(hitForce > 0) {
             for (int x = 0; x < cellWidth; x++) {
@@ -262,6 +278,10 @@ class Renderer {
 		this.mouseX = x;
 		this.mouseY = y;
 		this.mouseInside = inside;
+	}
+
+	public void setSpacePressed(boolean pressed) {
+		this.spacePressed = pressed;
 	}
 
 	/**

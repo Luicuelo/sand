@@ -77,6 +77,7 @@ public class Sand extends Application {
 		Button restartButton = new Button("Restart");
 		restartButton.setOnAction(e -> restart());
 		restartButton.setPrefHeight(BUTTON_HEIGHT);
+		restartButton.setFocusTraversable(false);
 
 		// Layout
 		BorderPane root = new BorderPane();
@@ -85,6 +86,16 @@ public class Sand extends Application {
 
 		// Create scene and show
 		Scene scene = new Scene(root, canvasWidth, canvasHeight + BUTTON_HEIGHT);
+		scene.setOnKeyPressed(e -> {
+			if (e.getCode() == javafx.scene.input.KeyCode.SPACE && renderer != null) {
+				renderer.setSpacePressed(true);
+			}
+		});
+		scene.setOnKeyReleased(e -> {
+			if (e.getCode() == javafx.scene.input.KeyCode.SPACE && renderer != null) {
+				renderer.setSpacePressed(false);
+			}
+		});
 		primaryStage.setScene(scene);
 		primaryStage.setResizable(false);
 		primaryStage.show();
