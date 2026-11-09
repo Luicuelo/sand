@@ -12,8 +12,8 @@ SandFX is a JavaFX-based particle physics simulation that implements a falling s
 
 ## Prerequisites
 
-- Java 8 or higher
-- JavaFX SDK (if not included in your Java distribution)
+- Java 17 or higher
+- JavaFX SDK 21 (if not included in your Java distribution)
 
 ## Building and Running
 
@@ -23,14 +23,14 @@ SandFX is a JavaFX-based particle physics simulation that implements a falling s
 2. Navigate to the project directory
 3. Compile the project:
    ```bash
-   javac --module-path $PATH_TO_FX --add-modules javafx.controls principal/Sand.java
+   javac -Xlint:all --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics -d bin src/principal/*.java
    ```
    
    Note: Replace `$PATH_TO_FX` with the path to your JavaFX SDK lib folder.
    
 4. Run the application:
    ```bash
-   java --module-path $PATH_TO_FX --add-modules javafx.controls principal.Sand
+   java --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics -cp bin principal.Sand
    ```
 
 ### Command Line Arguments
@@ -40,7 +40,7 @@ SandFX is a JavaFX-based particle physics simulation that implements a falling s
 
 Example with custom dimensions:
 ```bash
-java --module-path $PATH_TO_FX --add-modules javafx.controls principal.Sand --width=1024 --height=768
+java --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics -cp bin principal.Sand --width=1024 --height=768
 ```
 
 ### Using an IDE
@@ -49,33 +49,33 @@ java --module-path $PATH_TO_FX --add-modules javafx.controls principal.Sand --wi
 2. Add JavaFX libraries to your project dependencies
 3. Set the following VM options for running the project:
    ```
-   --module-path $PATH_TO_FX --add-modules javafx.controls
+   --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics
    ```
-4. Run the [Sand.java](file:///D:/Luis/Java/estados2/src/principal/Sand.java) main class
+4. Run the [Sand.java](src/principal/Sand.java) main class
 
 ## Project Structure
 
 ### Main Components
 
-1. **[Sand.java](file:///D:/Luis/Java/estados2/src/principal/Sand.java)** - Main JavaFX application class
+1. **[Sand.java](src/principal/Sand.java)** - Main JavaFX application class
    - Handles window creation and user interface
    - Manages the animation loop (60 FPS)
    - Processes mouse events for interaction
    - Controls application lifecycle
 
-2. **[Renderer.java](file:///D:/Luis/Java/estados2/src/principal/Renderer.java)** - Rendering and simulation engine
+2. **[Renderer.java](src/principal/Renderer.java)** - Rendering and simulation engine
    - Manages pixel data and palette
    - Handles particle generation at mouse position
    - Updates particle states using Transition rules
    - Renders the simulation to screen using block-based rendering
    - Processes hit forces applied to particles
 
-3. **[Transition.java](file:///D:/Luis/Java/estados2/src/principal/Transition.java)** - Physics and transition rules
-   - Defines patterns for particle behavior detection
+3. **[Transition.java](src/principal/Transition.java)** - Physics and transition rules
+   - Defines the rule tables (match and result patterns) for particle behaviour
    - Implements falling sand physics with gravity
    - Handles particle collisions and stacking
    - Manages lateral sliding when direct fall is blocked
-   - Processes hit forces applied to particles
+   - Pushes particles sideways for hit forces
 
 ## Physics Simulation
 
@@ -88,25 +88,47 @@ The simulation implements a cellular automaton approach to particle physics:
 3. **Sliding**: When direct downward movement is blocked, particles slide diagonally
 4. **Interaction**: Particles interact with boundaries (considered solid)
 
-### Patterns
+### Rules
 
-The system uses 7 predefined patterns to determine particle behavior:
+Every movement is a rule: a 3x3 neighbourhood that has to match the current
+generation and a 3x3 result that says what that neighbourhood becomes in the
+next one. Both are written with the same four glyphs:
 
-- Pattern 0: Particle with empty space directly below (falls straight down)
-- Pattern 1: Particle with empty space diagonally left-below
-- Pattern 2: Particle with empty space diagonally right-below
-- Pattern 3: Particle with no empty space around (stays in place)
-- Pattern 4: Particle with empty space below (general case)
-- Pattern 5: Particle with empty space to the right
-- Pattern 6: Particle with empty space to the left
+| Glyph | In a match | In a result |
+|-------|------------|-------------|
+| `?` | any neighbour | nothing is written |
+| `X` | a particle (the borders count as particles) | the particle is written there |
+| `_` | free space | the cell is emptied |
+| `x` | same as `X` | one of these cells keeps the particle, drawn by chance |
+
+A rule therefore reads as two stacked drawings, *now* and *after*. Gravity
+tries the rules below in order and the first match decides the move:
+
+| Rule | Match | Result | When |
+|------|-------|--------|------|
+| Free fall | `???`<br>`?X?`<br>`?_?` | `???`<br>`?_?`<br>`?X?` | free space below, the particle drops one row |
+| Slide both | `???`<br>`?X?`<br>`_X_` | `???`<br>`?_?`<br>`x?x` | something below, both diagonals free: one of them, half of the time each |
+| Slide left | `???`<br>`?X?`<br>`_XX` | `???`<br>`?_?`<br>`X??` | only the left diagonal is free |
+| Slide right | `???`<br>`?X?`<br>`XX_` | `???`<br>`?_?`<br>`??X` | only the right diagonal is free |
+| Stay | `???`<br>`?X?`<br>`XXX` | `???`<br>`?X?`<br>`???` | no free cell around (the border counts as solid), the particle stacks |
+
+The bottom row of a result is the row below the particle, so `X??` means "moved
+to the cell down-left". The `?` cells are left untouched on purpose: every
+particle is moved once by the rule of its own cell, and copying the neighbours
+would duplicate the ones that already moved in the same step.
+
+Hit forces use the same language with two more rules: `?X_` → `?_X` when the
+particle is pushed right and `_X?` → `X_?` when it is pushed left.
 
 ### Hit Forces
 
 The simulation supports applying forces to particles with mouse clicks:
 - Left-click applies a force from left to right
 - Right-click applies a force from right to left
-- Force strength is randomized between 1-10
+- Force strength is randomized between 1 and 10 (`Transition.MAX_HIT_FORCE`)
 - Probability of force application is proportional to hitForce value (10% to 100%)
+- A particle is only pushed when the cell on that side is free, so a hit never
+  squeezes particles into each other
 
 ## Technical Implementation
 

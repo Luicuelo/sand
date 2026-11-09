@@ -8,7 +8,6 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
 import javafx.scene.layout.BorderPane;
-import javafx.scene.paint.Color;
 import javafx.stage.Stage;
 import javafx.scene.input.MouseButton;
 
@@ -28,7 +27,6 @@ import javafx.scene.input.MouseButton;
  *   <li>Restart functionality</li>
  *   <li>Configurable window size via command-line parameters</li>
  * </ul>
- * </p>
  * 
  * @see Renderer
  * @see Transition
@@ -135,10 +133,6 @@ public class Sand extends Application {
 		GraphicsContext gc = canvas.getGraphicsContext2D();
 		finished = false;
 
-		gc.setFill(Color.RED);
-		gc.fillText("Generating .....", 100, 100);
-		System.out.println("Generating .....");
-
 		renderer = new Renderer(gc, canvasWidth, canvasHeight);
 
 		animationTimer = new AnimationTimer() {
@@ -146,7 +140,7 @@ public class Sand extends Application {
 			public void handle(long now) {
 				if (!finished && renderer != null) {
 					try {
-						renderer.updateRegion();
+						renderer.tick();
 					} catch (Exception e) {
 						System.err.println("Error updating : " + e.getMessage());
 						stopAnimation();
@@ -182,8 +176,8 @@ public class Sand extends Application {
 		});
 		
 		canvas.setOnMouseClicked(e -> {
-			if (renderer != null ) {
-				renderer.applyHit( e.getButton() == MouseButton.PRIMARY);
+			if (renderer != null) {
+				renderer.applyHit(e.getButton() == MouseButton.PRIMARY);
 			}
 		});
 	}
@@ -192,7 +186,6 @@ public class Sand extends Application {
 	 * Restarts the simulation by reinitializing the renderer.
 	 */
 	private void restart() {
-		System.out.println("Restarting ...");
 		if (renderer != null) {
 			renderer.restart();
 		}
@@ -215,7 +208,6 @@ public class Sand extends Application {
 	public void stop() {
 		stopAnimation();
 		renderer = null;
-		System.out.println(" destroyed");
 		Platform.exit();
 	}
 }

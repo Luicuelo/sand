@@ -3,6 +3,7 @@ package principal;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.*;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 /**
  * Renderer for the falling sand particle simulation.
@@ -10,7 +11,7 @@ import java.nio.ByteBuffer;
  * This class handles the visualization of the particle simulation, including
  * rendering particles to the screen, managing the color palette, and processing
  * user interactions. It uses a block-based rendering approach where each cell
- * in the simulation is rendered as a 4x4 pixel block for better performance.
+ * in the simulation is rendered as a PIXEL_SIZE x PIXEL_SIZE pixel block.
  * </p>
  * <p>
  * The renderer maintains two buffers for double buffering - one for the current
@@ -23,28 +24,34 @@ import java.nio.ByteBuffer;
  */
 class Renderer {
 	private static final int PALETTE_SIZE = 256;
-	private static final int PIXEL_SIZE = 8; // 4x4 pixels per cell
+	private static final int PARTICLE_COLORS = 254; // palette indices usable by particles (1..254, 0 = empty)
+	private static final int PIXEL_SIZE = 8; // block of PIXEL_SIZE x PIXEL_SIZE pixels per cell
+	private static final int BYTES_PER_PIXEL = 4; // BGRA
+	private static final int DROP_EVERY_FRAMES = 2; // drop particles only every other frame (30 times/s)
+	private static final int FRAMES_PER_COLOR = 250; // frames each palette index lasts (~4 s at 60 FPS)
+	private static final int BRUSH_RADIUS = 2; // cells painted around the mouse while SPACE is held
+	private static final int HIT_FRAMES = 10; // frames a hit force stays active
+	private static final WritablePixelFormat<ByteBuffer> PIXEL_FORMAT = PixelFormat.getByteBgraInstance();
 
 	private final GraphicsContext gc;
-	private final int width;
-	private final int height;
-	private final int cellWidth;
-	private final int cellHeight;
-	// private final Color[] palette = new Color[PALETTE_SIZE];
-	private final WritableImage estadosImage;
+	private final int widthPx;
+	private final int heightPx;
+	private final int cols;
+	private final int rows;
+	private final WritableImage frameImage;
 	private final PixelWriter pixelWriter;
 	private final Transition transition;
-	private int[][] cellData; // generation buffer
-	private int[][] nextCellData; // Next generation buffer
+	private final byte[] frameBuffer; // BGRA pixels of the whole canvas
+	private int[][] cells; // generation buffer
+	private int[][] nextCells; // next generation buffer
 	private int mouseX = 0;
 	private int mouseY = 0;
 	private boolean mouseInside = false;
 	private int frameCounter = 0;
 	private final Palette palette = new Palette();
-	private final byte[] blockBuffer = new byte[PIXEL_SIZE * PIXEL_SIZE * 4]; // BGRA format for 4x4 block
-	private int hitDirection = 0; // Direction of the hit: 1=right, -1=left, 0=no hit
-	private int hitForce = 0; // String of the hit
-    private int hitCount = 0;
+	private int hitDirection = 0; // 0 = no hit, otherwise Transition.LEFT or Transition.RIGHT
+	private int hitForce = 0; // strength of the hit (1 to Transition.MAX_HIT_FORCE)
+	private int hitCount = 0;
 	private boolean spacePressed = false;
 
 	/**
@@ -52,8 +59,9 @@ class Renderer {
 	 * <p>
 	 * The palette contains 256 colors where:
 	 * <ul>
-	 *   <li>Index 0: White (background)</li>
-	 *   <li>Indices 1-255: Random grayscale values</li>
+	 *   <li>Index 0: white (background)</li>
+	 *   <li>Indices 1-254: random saturated colors, one per particle "batch"</li>
+	 *   <li>Index 255: unused</li>
 	 * </ul>
 	 * </p>
 	 */
@@ -61,11 +69,10 @@ class Renderer {
 		final byte[][] colors = new byte[PALETTE_SIZE][4];
 
 		/**
-		 * Constructs a new palette with a white background color and random
-		 * grayscale values for the other colors.
+		 * Constructs a new palette with a white background color and a random,
+		 * bright color for every other index.
 		 */
 		public Palette() {
-
 			colors[0][0] = (byte) 255;
 			colors[0][1] = (byte) 255;
 			colors[0][2] = (byte) 255;
@@ -81,13 +88,11 @@ class Renderer {
 				colors[a][2] = (byte) (int) (c.getRed() * 255);
 				colors[a][3] = (byte) 255;
 			}
-
 		}
-
 	}
 
 	/**
-	 * Creates a new plasma renderer and generates the initial fractal pattern.
+	 * Creates a new renderer and draws the initial (empty) frame.
 	 *
 	 * @param gc the graphics context to draw on
 	 * @param w  canvas width in pixels
@@ -103,175 +108,224 @@ class Renderer {
 		}
 
 		this.gc = gc;
-		this.width = w;
-		this.height = h;
-		this.cellWidth = width / PIXEL_SIZE;
-		this.cellHeight = height / PIXEL_SIZE;
+		this.widthPx = w;
+		this.heightPx = h;
+		this.cols = widthPx / PIXEL_SIZE;
+		this.rows = heightPx / PIXEL_SIZE;
 
-		// Create writable image and pixel writer for efficient drawing
-		estadosImage = new WritableImage(width, height);
-		pixelWriter = estadosImage.getPixelWriter();
-		cellData = new int[cellHeight][cellWidth];
-		nextCellData = new int[cellHeight][cellWidth];
-		transition = new Transition(cellWidth, cellHeight);
+		// Image, pixel writer and the buffer holding a whole frame
+		frameImage = new WritableImage(widthPx, heightPx);
+		pixelWriter = frameImage.getPixelWriter();
+		frameBuffer = new byte[widthPx * heightPx * BYTES_PER_PIXEL];
+		cells = new int[rows][cols];
+		nextCells = new int[rows][cols];
+		transition = new Transition(cols, rows);
 
 		initialize();
-	}
-
-	/**
-	 * Performs initial drawing operations for the simulation.
-	 * <p>
-	 * This method is called during initialization to set up the initial state
-	 * of the simulation. Currently it just prints a message to the console.
-	 * </p>
-	 */
-	public void initialDrawing() {
-
-		// initialColors();
-		System.out.println("Initial Drawing");
-		Thread.yield();
 	}
 
 	/**
 	 * Initializes the renderer by clearing the data arrays and drawing the initial image.
 	 */
 	private void initialize() {
-		// Clear matrix (all cells to 0)
-		cellData = new int[cellHeight][cellWidth];
-		nextCellData = new int[cellHeight][cellWidth];
+		// Clear matrix (all cells to 0), reusing the existing buffers
+		clearGrid(cells);
+		clearGrid(nextCells);
 
-		initialDrawing();
-		updateImageFromPalette();
-		gc.drawImage(estadosImage, 0, 0);
-		System.out.println("Image Drawn");
+		renderFrame();
+		gc.drawImage(frameImage, 0, 0);
 	}
 
 	/**
-	 * Updates for one frame (called at 60 FPS). Processes pixel and redraws the
-	 * canvas.
+	 * Advances the simulation by one frame (called at 60 FPS): adds particles
+	 * under the mouse, runs one simulation step and redraws the canvas.
 	 */
-	public void updateRegion() {
-		// Create point from mouse only every two frames
-		if (mouseInside && frameCounter % 2 == 0) {
-			int actualColor = (frameCounter / 250) % 254 + 1;
+	public void tick() {
+		// Drop a particle under the mouse only every DROP_EVERY_FRAMES frames
+		if (mouseInside && frameCounter % DROP_EVERY_FRAMES == 0) {
+			int paletteIndex = (frameCounter / FRAMES_PER_COLOR) % PARTICLE_COLORS + 1;
 			int cellX = mouseX / PIXEL_SIZE;
 			int cellY = mouseY / PIXEL_SIZE;
 			if (spacePressed) {
-				for (int dy = -2; dy <= 2; dy++) {
-					for (int dx = -2; dx <= 2; dx++) {
+				for (int dy = -BRUSH_RADIUS; dy <= BRUSH_RADIUS; dy++) {
+					for (int dx = -BRUSH_RADIUS; dx <= BRUSH_RADIUS; dx++) {
 						int cx = cellX + dx;
 						int cy = cellY + dy;
-						if (cx >= 0 && cx < cellWidth && cy >= 0 && cy < cellHeight && cellData[cy][cx] == 0) {
-							cellData[cy][cx] = actualColor;
+						if (cx >= 0 && cx < cols && cy >= 0 && cy < rows && cells[cy][cx] == 0) {
+							cells[cy][cx] = paletteIndex;
 						}
 					}
 				}
 			} else {
-				if (cellX >= 0 && cellX < cellWidth && cellY >= 0 && cellY < cellHeight && cellData[cellY][cellX] == 0) {
-					cellData[cellY][cellX] = actualColor;
+				if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows && cells[cellY][cellX] == 0) {
+					cells[cellY][cellX] = paletteIndex;
 				}
 			}
 		}
 		frameCounter++;
-		// clear next
-		nextCellData = new int[cellHeight][cellWidth];
-		iteration();
-		gc.drawImage(estadosImage, 0, 0);
+		stepSimulation();
+		gc.drawImage(frameImage, 0, 0);
 	}
 
 	/**
-	 * Performs one iteration of the simulation.
+	 * Performs one step of the simulation.
 	 * <p>
 	 * This method updates the state of all particles in the simulation based on
 	 * the physics rules defined in the Transition class. It handles both regular
 	 * particle movement and hit forces applied by the user.
 	 * </p>
-	 */
-	public void iteration() {
-		int actualColor = (frameCounter / 100) % 254 + 1;
-
-        if(hitForce > 0) {
-            for (int x = 0; x < cellWidth; x++) {
-                for (int y = 0; y < cellHeight; y++) {
-                    if (cellData[y][x] != 0) {
-                        transition.getNextHitState(x, y, cellData, nextCellData, hitForce, hitDirection);
-                    }
-                }
-            }
-            // Swap references
-            int[][] temp = cellData;
-            cellData = nextCellData;
-            nextCellData = temp;
-            nextCellData = new int[cellHeight][cellWidth];
-
-        }
-		for (int y = 0; y < cellHeight; y++) {
-			for (int x = 0; x < cellWidth; x++) {
-				transition.getNextState(x, y, cellData, nextCellData, actualColor);
-			}
-		}
-		
-		// hit stops
-        if (hitForce>0) hitCount++;
-        if (hitCount > 10){
-		    hitForce = 0;
-		    hitDirection = 0;
-            hitCount=0;
-        }
-
-		// Swap references
-		int[][] temp = cellData;
-		cellData = nextCellData;
-		nextCellData = temp;
-
-		updateImageFromPalette();
-	}
-
-	/**
-	 * Updates the image from the palette data.
 	 * <p>
-	 * This method converts the cell data into pixel data for display. Each cell
-	 * is rendered as a 4x4 pixel block using the color from the palette. The
-	 * method uses block-based rendering for better performance.
+	 * When it returns, {@code cells} holds the new generation and {@code nextCells}
+	 * is empty, ready to be written by the next step.
 	 * </p>
 	 */
-	private void updateImageFromPalette() {
-		WritablePixelFormat<ByteBuffer> pixelFormat = PixelFormat.getByteBgraInstance();
+	private void stepSimulation() {
+		if (hitForce > 0) {
+			pushParticles();
+			// The hit result becomes the current state; gravity is applied on top of it
+			advanceGeneration();
+		}
 
-		for (int cy = 0; cy < cellHeight; cy++) {
-			for (int cx = 0; cx < cellWidth; cx++) {
-
-				// Fill the entire 4x4 block (16 pixels) with the same color
-				int color = cellData[cy][cx];
-				byte b = palette.colors[color][0]; // B
-				byte g = palette.colors[color][1]; // G
-				byte r = palette.colors[color][2]; // R
-				byte a = palette.colors[color][3]; // A
-
-				for (int i = 0; i < PIXEL_SIZE * PIXEL_SIZE; i++) {
-					int pos = i * 4;
-					blockBuffer[pos] = b; // B
-					blockBuffer[pos + 1] = g; // G
-					blockBuffer[pos + 2] = r; // R
-					blockBuffer[pos + 3] = a; // A
+		// Gravity: empty cells cannot move anything, so they are skipped.
+		// Every row is walked from side to side, and the side is swapped every
+		// generation: when two particles want the same cell the one read first
+		// keeps it, so a fixed side would always favour the same particle and a
+		// growing pile would lean towards it
+		boolean rightToLeft = (frameCounter & 1) == 0;
+		for (int y = 0; y < rows; y++) {
+			for (int i = 0; i < cols; i++) {
+				int x = rightToLeft ? cols - 1 - i : i;
+				if (cells[y][x] != 0) {
+					transition.stepParticle(x, y, cells, nextCells);
 				}
+			}
+		}
 
-				// Write 4x4 block at once
-				int screenX = cx * PIXEL_SIZE;
-				int screenY = cy * PIXEL_SIZE;
-				if (screenX + PIXEL_SIZE <= width && screenY + PIXEL_SIZE <= height) {
-					pixelWriter.setPixels(screenX, screenY, PIXEL_SIZE, PIXEL_SIZE, pixelFormat, blockBuffer, 0,
-							PIXEL_SIZE * 4);
+		// A hit only lives HIT_FRAMES frames
+		if (hitForce > 0) {
+			hitCount++;
+		}
+		if (hitCount > HIT_FRAMES) {
+			hitForce = 0;
+			hitDirection = 0;
+			hitCount = 0;
+		}
+
+		advanceGeneration();
+		renderFrame();
+	}
+
+	/**
+	 * Pushes every particle in the direction of the current hit.
+	 * <p>
+	 * The grid is walked starting from the side the particles are pushed to, so a
+	 * particle always lands on a cell whose own particle has already moved away.
+	 * In the opposite order the origin of the particle behind would be cleared on
+	 * top of the particle that just moved in.
+	 * </p>
+	 */
+	private void pushParticles() {
+		boolean pushRight = hitDirection == Transition.RIGHT;
+		for (int i = 0; i < cols; i++) {
+			int x = pushRight ? cols - 1 - i : i;
+			for (int y = 0; y < rows; y++) {
+				if (cells[y][x] != 0) {
+					transition.pushParticle(x, y, cells, nextCells, hitForce, hitDirection);
 				}
 			}
 		}
 	}
 
 	/**
-	 * Updates mouse position for interactive plasma effects.
+	 * Paints the whole grid into the image.
+	 * <p>
+	 * Every cell is expanded to a PIXEL_SIZE x PIXEL_SIZE block inside one byte
+	 * buffer, which is sent to the image in a single call at the end. The strip
+	 * left over when the canvas is not a multiple of PIXEL_SIZE stays black.
+	 * </p>
+	 */
+	private void renderFrame() {
+		for (int cy = 0; cy < rows; cy++) {
+			for (int cx = 0; cx < cols; cx++) {
+				writeBlock(cx, cy, palette.colors[cells[cy][cx]]);
+			}
+		}
+		pixelWriter.setPixels(0, 0, widthPx, heightPx, PIXEL_FORMAT, frameBuffer, 0, widthPx * BYTES_PER_PIXEL);
+	}
+
+	/**
+	 * Paints one cell as a block of PIXEL_SIZE x PIXEL_SIZE pixels inside the
+	 * frame buffer.
 	 *
-	 * @param x      mouse X coordinate
-	 * @param y      mouse Y coordinate
+	 * @param cx    cell column
+	 * @param cy    cell row
+	 * @param color the four BGRA components of the color
+	 */
+	private void writeBlock(int cx, int cy, byte[] color) {
+		int firstColumn = cx * PIXEL_SIZE * BYTES_PER_PIXEL;
+		for (int py = 0; py < PIXEL_SIZE; py++) {
+			int rowStart = (cy * PIXEL_SIZE + py) * widthPx * BYTES_PER_PIXEL + firstColumn;
+			for (int px = 0; px < PIXEL_SIZE; px++) {
+				writeColor(frameBuffer, rowStart + px * BYTES_PER_PIXEL, color);
+			}
+		}
+	}
+
+	/**
+	 * Copies one BGRA color into a byte buffer.
+	 * <p>
+	 * Writes the four color components (B, G, R, A) starting at {@code pos},
+	 * which is the layout expected by the BGRA pixel format used for rendering.
+	 * </p>
+	 *
+	 * @param buffer destination buffer
+	 * @param pos    index where the color starts
+	 * @param color  the four BGRA components of the color
+	 */
+	private static void writeColor(byte[] buffer, int pos, byte[] color) {
+		buffer[pos] = color[0]; // B
+		buffer[pos + 1] = color[1]; // G
+		buffer[pos + 2] = color[2]; // R
+		buffer[pos + 3] = color[3]; // A
+	}
+
+	/**
+	 * Makes the grid written by the last pass the current state and leaves the
+	 * recycled one empty for the next pass.
+	 * <p>
+	 * {@code cells} and {@code nextCells} are two independent arrays: this only
+	 * changes which array each field points to, never their contents. The buffer
+	 * left over after the exchange holds the previous generation, so it is
+	 * cleared here to look like a brand new one.
+	 * </p>
+	 */
+	private void advanceGeneration() {
+		int[][] temp = cells;
+		cells = nextCells;
+		nextCells = temp;
+		clearGrid(nextCells);
+	}
+
+	/**
+	 * Sets every cell of a grid to 0 (empty).
+	 * <p>
+	 * Clears the buffer in place so it can be reused for the next generation
+	 * instead of allocating a new array on every frame.
+	 * </p>
+	 *
+	 * @param grid the grid to clear
+	 */
+	private static void clearGrid(int[][] grid) {
+		for (int[] row : grid) {
+			Arrays.fill(row, 0);
+		}
+	}
+
+	/**
+	 * Updates the mouse position used to drop particles.
+	 *
+	 * @param x      mouse X coordinate in pixels
+	 * @param y      mouse Y coordinate in pixels
 	 * @param inside true if mouse is inside the canvas
 	 */
 	public void setMousePosition(int x, int y, boolean inside) {
@@ -280,13 +334,18 @@ class Renderer {
 		this.mouseInside = inside;
 	}
 
+	/**
+	 * Enables or disables the brush that paints a wider area around the mouse.
+	 *
+	 * @param pressed true while the SPACE key is held down
+	 */
 	public void setSpacePressed(boolean pressed) {
 		this.spacePressed = pressed;
 	}
 
 	/**
-	 * Regenerates the plasma fractal pattern without recreating the renderer.
-	 * Reuses existing WritableImage and draws a new fractal pattern.
+	 * Restarts the simulation without recreating the renderer.
+	 * Reuses the existing image and buffers.
 	 */
 	public void restart() {
 		initialize();
@@ -297,34 +356,15 @@ class Renderer {
 	 * <p>
 	 * This method is called when the user clicks on the canvas. It determines
 	 * the direction of the force based on which mouse button was pressed and
-	 * generates a random force strength between 1 and 10.
+	 * generates a random force strength between 1 and
+	 * {@link Transition#MAX_HIT_FORCE}.
 	 * </p>
 	 *
 	 * @param button true if the primary (left) button was pressed, false if secondary (right)
 	 */
 	public void applyHit(boolean button) {
-		hitDirection = button? -1 : 1; // Izquierda -> derecha, Derecha -> izquierda
-		hitForce = (int)(Math.random() * 10) + 1; // Fuerza 1-10
+		hitDirection = button ? Transition.LEFT : Transition.RIGHT;
+		hitForce = (int) (Math.random() * Transition.MAX_HIT_FORCE) + 1;
+		hitCount = 0; // a new hit starts its own countdown
 	}
-
-	/*
-	 * private void copyPixelRegion(int px, int py, int size) { int offsetX = ((int)
-	 * Math.floor((Math.random() * MAX_DISPLACEMENT)) - 1); int offsetY = ((int)
-	 * Math.floor((Math.random() * MAX_DISPLACEMENT)) - 1); if (px > 0 && py > 0 &&
-	 * px + size - 1 < width && py + size - 1 < height) { int sourceX = Math.max(0,
-	 * px + offsetX); int sourceY = Math.max(0, py + offsetY);
-	 * 
-	 * int actualWidth = size; int actualHeight = size;
-	 * 
-	 * if (sourceX + size > width) { actualWidth = width - sourceX; } if (sourceY +
-	 * size > height) { actualHeight = height - sourceY; }
-	 * 
-	 * if (actualWidth > 0 && actualHeight > 0) { byte[] buffer = new
-	 * byte[actualWidth * actualHeight * 4]; WritablePixelFormat<ByteBuffer>
-	 * pixelFormat = PixelFormat.getByteBgraInstance();
-	 * 
-	 * pixelReader.getPixels(sourceX, sourceY, actualWidth, actualHeight,
-	 * pixelFormat, buffer, 0, actualWidth * 4); pixelWriter.setPixels(px, py,
-	 * actualWidth, actualHeight, pixelFormat, buffer, 0, actualWidth * 4); } } }
-	 */
 }
