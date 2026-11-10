@@ -23,12 +23,10 @@ import java.util.Arrays;
  * @see Transition
  */
 class Renderer {
-	private static final int PALETTE_SIZE = 256;
-	private static final int PARTICLE_COLORS = 254; // palette indices usable by particles (1..254, 0 = empty)
+	private static final int PALETTE_SIZE = Material.PALETTE_SIZE;
 	private static final int PIXEL_SIZE = 8; // block of PIXEL_SIZE x PIXEL_SIZE pixels per cell
 	private static final int BYTES_PER_PIXEL = 4; // BGRA
 	private static final int DROP_EVERY_FRAMES = 2; // drop particles only every other frame (30 times/s)
-	private static final int FRAMES_PER_COLOR = 250; // frames each palette index lasts (~4 s at 60 FPS)
 	private static final int BRUSH_RADIUS = 2; // cells painted around the mouse while SPACE is held
 	private static final int HIT_FRAMES = 10; // frames a hit force stays active
 	private static final WritablePixelFormat<ByteBuffer> PIXEL_FORMAT = PixelFormat.getByteBgraInstance();
@@ -49,6 +47,7 @@ class Renderer {
 	private boolean mouseInside = false;
 	private int frameCounter = 0;
 	private final Palette palette = new Palette();
+	private Material selected = Material.LIST[0];
 	private int hitDirection = 0; // 0 = no hit, otherwise Transition.LEFT or Transition.RIGHT
 	private int hitForce = 0; // strength of the hit (1 to Transition.MAX_HIT_FORCE)
 	private int hitCount = 0;
@@ -60,8 +59,10 @@ class Renderer {
 	 * The palette contains 256 colors where:
 	 * <ul>
 	 *   <li>Index 0: white (background)</li>
-	 *   <li>Indices 1-254: random saturated colors, one per particle "batch"</li>
-	 *   <li>Index 255: unused</li>
+	 *   <li>Every other index: the color of one value of a material, interpolating
+	 *       the stops of its band. The last value of a material with life is a
+	 *       very light tint, so a particle that has spent its life is almost
+	 *       invisible while it waits for the rule that transforms it</li>
 	 * </ul>
 	 * </p>
 	 */
@@ -69,25 +70,34 @@ class Renderer {
 		final byte[][] colors = new byte[PALETTE_SIZE][4];
 
 		/**
-		 * Constructs a new palette with a white background color and a random,
-		 * bright color for every other index.
+		 * Constructs a new palette from the material bands, with a white background
+		 * and a color for every value of every material.
 		 */
 		public Palette() {
-			colors[0][0] = (byte) 255;
-			colors[0][1] = (byte) 255;
-			colors[0][2] = (byte) 255;
-			colors[0][3] = (byte) 255;
+			for (int index = 0; index < PALETTE_SIZE; index++)
+				setColor(index, javafx.scene.paint.Color.WHITE);
 
-			for (int a = 1; a < PALETTE_SIZE; a++) {
-				double hue = Math.random() * 360.0;
-				double saturation = 0.7 + Math.random() * 0.3;
-				double brightness = 0.7 + Math.random() * 0.3;
-				javafx.scene.paint.Color c = javafx.scene.paint.Color.hsb(hue, saturation, brightness);
-				colors[a][0] = (byte) (int) (c.getBlue() * 255);
-				colors[a][1] = (byte) (int) (c.getGreen() * 255);
-				colors[a][2] = (byte) (int) (c.getRed() * 255);
-				colors[a][3] = (byte) 255;
+			for (Material material : Material.LIST) {
+				for (int value = material.first; value <= material.last(); value++) {
+					javafx.scene.paint.Color color = material.color(value - material.first);
+					if (material.life && value == material.last())
+						color = color.interpolate(javafx.scene.paint.Color.WHITE, 0.85);
+					setColor(value, color);
+				}
 			}
+		}
+
+		/**
+		 * Writes one color of the palette in the byte order of the frame buffer.
+		 *
+		 * @param index the palette index to write
+		 * @param color the color of that index
+		 */
+		private void setColor(int index, javafx.scene.paint.Color color) {
+			colors[index][0] = (byte) (int) (color.getBlue() * 255);
+			colors[index][1] = (byte) (int) (color.getGreen() * 255);
+			colors[index][2] = (byte) (int) (color.getRed() * 255);
+			colors[index][3] = (byte) 255;
 		}
 	}
 
@@ -143,7 +153,6 @@ class Renderer {
 	public void tick() {
 		// Drop a particle under the mouse only every DROP_EVERY_FRAMES frames
 		if (mouseInside && frameCounter % DROP_EVERY_FRAMES == 0) {
-			int paletteIndex = (frameCounter / FRAMES_PER_COLOR) % PARTICLE_COLORS + 1;
 			int cellX = mouseX / PIXEL_SIZE;
 			int cellY = mouseY / PIXEL_SIZE;
 			if (spacePressed) {
@@ -152,13 +161,13 @@ class Renderer {
 						int cx = cellX + dx;
 						int cy = cellY + dy;
 						if (cx >= 0 && cx < cols && cy >= 0 && cy < rows && cells[cy][cx] == 0) {
-							cells[cy][cx] = paletteIndex;
+							cells[cy][cx] = selected.spawn();
 						}
 					}
 				}
 			} else {
 				if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows && cells[cellY][cellX] == 0) {
-					cells[cellY][cellX] = paletteIndex;
+					cells[cellY][cellX] = selected.spawn();
 				}
 			}
 		}
@@ -341,6 +350,22 @@ class Renderer {
 	 */
 	public void setSpacePressed(boolean pressed) {
 		this.spacePressed = pressed;
+	}
+
+	/**
+	 * Selects the material that the mouse paints.
+	 * <p>
+	 * The glyph is enough to name a material, so the key pressed and the button
+	 * of the toolbar say the same thing. Anything that is not a material is
+	 * ignored, so the rest of the keyboard keeps working.
+	 * </p>
+	 *
+	 * @param glyph glyph of the material, in lowercase or uppercase
+	 */
+	public void selectMaterial(char glyph) {
+		Material material = Material.byGlyph(Character.toUpperCase(glyph));
+		if (material != null)
+			selected = material;
 	}
 
 	/**

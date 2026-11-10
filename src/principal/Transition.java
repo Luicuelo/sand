@@ -1,26 +1,30 @@
 package principal;
 
 /**
- * Defines transition rules for falling sand particle simulation.
+ * Defines the rules of the sand particle simulation.
  * <p>
- * This class implements the physics rules that govern how particles move and
- * interact in the simulation. It evaluates gravity, collision, and stacking
- * behaviors based on neighbor patterns. The class uses pattern matching to
- * determine how each particle should behave in the next simulation step.
+ * Every rule is a match and a result: the neighbourhood that triggers it and
+ * what that neighbourhood becomes, written with the glyphs of {@link Pattern}.
+ * The rules are tried in order and the first match wins, so the table is read
+ * as a priority list: the life transitions first, then the behaviour of each
+ * material, and at the end the generic gravity that every particle obeys.
  * </p>
  * <p>
- * The physics simulation includes:
+ * The simulation includes:
  * <ul>
- *   <li>Gravity - particles fall downward when possible</li>
- *   <li>Collision detection - particles interact with other particles and boundaries</li>
- *   <li>Stacking - particles form piles when they can't fall further</li>
- *   <li>Sliding - particles slide diagonally when direct downward movement is blocked</li>
- *   <li>Hit forces - particles can be moved by user-applied forces</li>
+ *   <li>Gravity, sliding and stacking for any particle</li>
+ *   <li>Materials, each one with its own band of palette values</li>
+ *   <li>Life, that the {@code V}, {@code W}, {@code r} and {@code l} glyphs walk
+ *       until the rule that transforms the particle fires</li>
+ *   <li>Creation, by copying a particle with {@code o} or by writing a material
+ *       where there was nothing</li>
+ *   <li>Hit forces, that move particles sideways</li>
  * </ul>
  * </p>
- * 
+ *
  * @see Sand
  * @see Renderer
+ * @see Material
  */
 class Transition {
 	/** Hit force pushing particles towards decreasing x. */
@@ -70,7 +74,7 @@ class Transition {
 		// Check if particle should be affected by the hit force
 		if (dice < hitForce) {
 			Step step = hitDirection == RIGHT ? Pattern.PUSH_RIGHT_STEP : Pattern.PUSH_LEFT_STEP;
-			if (matches(step.match, x, y, cells)) {
+			if (matches(step, x, y, cells)) {
 				applyPattern(step, x, y, cells, nextCells);
 				return;
 			}
@@ -101,7 +105,7 @@ class Transition {
 	 */
 	public void stepParticle(int x, int y, int[][] cells, int[][] nextCells) {
 		for (Step step : Pattern.STEPS) {
-			if (matches(step.match, x, y, cells)) {
+			if (matches(step, x, y, cells)) {
 				applyPattern(step, x, y, cells, nextCells);
 				return;
 			}
@@ -114,20 +118,37 @@ class Transition {
 	/**
 	 * Writes the result of a rule into the next generation.
 	 * <p>
-	 * The result is a small drawing of what the 3x3 neighbourhood becomes:
+	 * The result is a small drawing of what the neighbourhood becomes, and each
+	 * glyph says what happens in its cell:
 	 * <ul>
-	 *   <li>{@link Pattern#EMPTY}: the cell is emptied</li>
-	 *   <li>{@link Pattern#SOLID}: the particle is written there</li>
+	 *   <li>{@link Material#EMPTY}: the cell is emptied</li>
+	 *   <li>{@link Material#PARTICLE}: the particle is written there, with its
+	 *       value, so it moves</li>
 	 *   <li>{@link Pattern#SHARED}: the particle is written in one of these cells,
 	 *       each one with one chance in as many as there are, so of two free
 	 *       diagonals each one is used half of the time. Only one of them receives
 	 *       the particle and the rest stay empty; when none of them wins the dice
 	 *       the particle still goes to the last one</li>
-	 *   <li>{@link Pattern#DONT_CARE}: nothing is written</li>
+	 *   <li>{@link Pattern#REPEATED}: the particle is copied in each of these
+	 *       cells with one chance in as many as there are, and each one rolls its
+	 *       own dice, so several of them can win: this is how a material is
+	 *       created and not only moved</li>
+	 *   <li>{@link Pattern#WRAPS}, {@link Pattern#CLAMPS}, {@link Pattern#BURNS}
+	 *       and {@link Pattern#FEEDS}: like a particle, but written with its value
+	 *       one step older, one step older without wrapping, half of the life it
+	 *       has left older, or half of the life it has spent younger</li>
+	 *   <li>a material glyph: a new particle of that material is created there</li>
+	 *   <li>{@link Material#ANY}: nothing is written</li>
 	 * </ul>
 	 * The {@code ?} cells need no copy: a neighbour holding a particle is a
 	 * particle of its own that moves in its own step, and copying it here would
 	 * leave a second copy in the cell it just left.
+	 * </p>
+	 * <p>
+	 * The particle itself is written once, when the pass is over, in the cell that
+	 * claimed it. When no glyph claimed it and its own cell was left empty, it
+	 * stays where it was; when the rule wrote something else in its cell, the
+	 * particle is consumed, which is how a material becomes another one.
 	 * </p>
 	 *
 	 * @param step      the rule being applied, its result is what gets written
@@ -139,9 +160,16 @@ class Transition {
 	private void applyPattern(Step step, int x, int y, int[][] cells, int[][] nextCells) {
 		String[] result = step.result;
 		int particle = cells[y][x];
-		// Without a destination the particle stays where it was
+
+		// Where the particle ends up, and with which value. Only the glyphs that
+		// carry it claim a destination; without a claim it stays where it was,
+		// unless the rule wrote something else in its own cell
+		boolean claimed = false;
 		int destinationX = x;
 		int destinationY = y;
+		int destinationValue = particle;
+		boolean originWritten = false;
+
 		int lastSharedX = -1; // last "x" of the result, the one that catches a miss
 		int lastSharedY = -1;
 		boolean hit = false;
@@ -149,24 +177,77 @@ class Transition {
 		for (int py = 0; py < result.length; py++) {
 			for (int px = 0; px < result[py].length(); px++) {
 				char glyph = result[py].charAt(px);
-				int tx = x + px - 1;
-				int ty = y + py - 1;
+				int tx = x + px - step.anchorX;
+				int ty = y + py - step.anchorY;
 				if (!inside(tx, ty))
 					continue;
-				if (glyph == Pattern.EMPTY) {
+				boolean origin = tx == x && ty == y;
+				switch (glyph) {
+				case Material.ANY:
+					break;
+				case Material.EMPTY:
 					nextCells[ty][tx] = 0;
-				} else if (glyph == Pattern.SOLID) {
+					originWritten |= origin;
+					break;
+				case Material.PARTICLE:
+					claimed = true;
 					destinationX = tx;
 					destinationY = ty;
-				} else if (glyph == Pattern.SHARED) {
+					destinationValue = particle;
+					break;
+				case Pattern.SHARED:
 					lastSharedX = tx;
 					lastSharedY = ty;
 					// Die with one face per "x": 0 wins. Once one wins the others are
 					// not rolled any more
 					if (!hit && (int) (Math.random() * step.shared) == 0) {
+						claimed = true;
 						destinationX = tx;
 						destinationY = ty;
+						destinationValue = particle;
 						hit = true;
+					}
+					break;
+				case Pattern.REPEATED:
+					// One die per cell, all of them independent: the winners are a new
+					// particle with one of the shares of the life that is left
+					if ((int) (Math.random() * step.copies) == 0 && isFree(tx, ty, nextCells)) {
+						int value = lifeOfCopy(particle, step.copies);
+						if (value >= 0)
+							nextCells[ty][tx] = value;
+						originWritten |= origin;
+					}
+					break;
+				case Pattern.WRAPS:
+					claimed = true;
+					destinationX = tx;
+					destinationY = ty;
+					destinationValue = Material.advanceWrapped(particle);
+					break;
+				case Pattern.CLAMPS:
+					claimed = true;
+					destinationX = tx;
+					destinationY = ty;
+					destinationValue = Material.advanceClamped(particle);
+					break;
+				case Pattern.BURNS:
+					claimed = true;
+					destinationX = tx;
+					destinationY = ty;
+					destinationValue = Material.burn(particle);
+					break;
+				case Pattern.FEEDS:
+					claimed = true;
+					destinationX = tx;
+					destinationY = ty;
+					destinationValue = Material.feed(particle);
+					break;
+				default:
+					// A material glyph: the cell becomes a particle of that material
+					Material material = Material.byGlyph(glyph);
+					if (material != null && isFree(tx, ty, nextCells)) {
+						nextCells[ty][tx] = material.spawn();
+						originWritten |= origin;
 					}
 				}
 			}
@@ -174,41 +255,70 @@ class Transition {
 
 		// Every "x" missed the dice: the last one takes the particle anyway
 		if (!hit && lastSharedX >= 0) {
+			claimed = true;
 			destinationX = lastSharedX;
 			destinationY = lastSharedY;
+			destinationValue = particle;
 		}
 
-		// The particle is written after the cells are emptied, and when another
-		// particle took the destination this frame it stays where it was, so none
-		// of them is lost
-		if (!isFree(destinationX, destinationY, nextCells)) {
-			destinationX = x;
-			destinationY = y;
+		if (claimed) {
+			// The particle is written after the cells are emptied, and when another
+			// particle took the destination this frame it stays where it was, so
+			// none of them is lost
+			if (!isFree(destinationX, destinationY, nextCells)) {
+				destinationX = x;
+				destinationY = y;
+				destinationValue = particle;
+			}
+			nextCells[destinationY][destinationX] = destinationValue;
+		} else if (!originWritten) {
+			// Nothing claimed the particle and its cell is still empty: it stays
+			nextCells[y][x] = particle;
 		}
-		nextCells[destinationY][destinationX] = particle;
 	}
 
 	/**
-	 * Checks whether a pattern matches the neighbourhood of a cell.
+	 * Shares out the life that is left in a particle between the copies that one
+	 * "o" can make, so that a child never lives longer than its parent.
+	 *
+	 * @param value  the value of the particle that makes the copies
+	 * @param copies the number of copies that share the life that is left
+	 * @return the value of one copy, or -1 when there is no life left to share
+	 */
+	private static int lifeOfCopy(int value, int copies) {
+		Material material = Material.ofValue(value);
+		if (material == null || !material.life)
+			return value; // without life there is nothing to share
+		int share = (material.last() - value) / copies;
+		if (share < 1)
+			return -1; // too old to leave a child
+		return material.last() - share;
+	}
+
+	/**
+	 * Checks whether the match of a rule fits the neighbourhood of a cell.
 	 * <p>
-	 * The pattern is a 3x3 matrix: row 0 is the row above the cell, row 1 the row
-	 * of the cell and row 2 the row below it. Values that do not match make the
-	 * method return immediately.
+	 * The pattern is a small matrix centred on the cell: the middle row is its own
+	 * row, the middle character the particle itself. The centre is computed from
+	 * the size of the pattern, so any odd size works and the rules do not have to
+	 * count columns. Characters that do not match make the method return
+	 * immediately.
 	 * </p>
 	 *
-	 * @param pattern the 3x3 pattern to match, three rows of three characters
-	 * @param x       the x coordinate of the cell to check
-	 * @param y       the y coordinate of the cell to check
-	 * @param cells   the cell data to check against
+	 * @param step  the rule whose match is checked, it also knows its centre
+	 * @param x     the x coordinate of the cell to check
+	 * @param y     the y coordinate of the cell to check
+	 * @param cells the cell data to check against
 	 * @return true if the pattern matches, false otherwise
 	 */
-	private boolean matches(String[] pattern, int x, int y, int[][] cells) {
+	private boolean matches(Step step, int x, int y, int[][] cells) {
+		String[] pattern = step.match;
 		for (int py = 0; py < pattern.length; py++) {
 			for (int px = 0; px < pattern[py].length(); px++) {
 				char wanted = pattern[py].charAt(px);
-				if (wanted == Pattern.DONT_CARE)
+				if (wanted == Material.ANY)
 					continue; // this neighbour does not matter
-				if (wanted != occupancy(x + px - 1, y + py - 1, cells))
+				if (!matches(wanted, x + px - step.anchorX, y + py - step.anchorY, cells))
 					return false;
 			}
 		}
@@ -216,25 +326,49 @@ class Transition {
 	}
 
 	/**
+	 * Checks one glyph of a match against one position.
+	 * <p>
+	 * An uppercase letter matches its whole band, a lowercase one only the last
+	 * value of the band: the material is still there but it has spent its life, so
+	 * the rule that transforms it catches it.
+	 * </p>
+	 *
+	 * @param wanted the glyph of the match
+	 * @param x      the x coordinate to inspect, may be outside the grid
+	 * @param y      the y coordinate to inspect, may be outside the grid
+	 * @param cells  the cell data
+	 * @return true if the position looks like the glyph
+	 */
+	private boolean matches(char wanted, int x, int y, int[][] cells) {
+		if (wanted == Material.PARTICLE)
+			return glyphAt(x, y, cells) != Material.EMPTY;
+		if (Character.isLowerCase(wanted)) {
+			Material material = Material.byGlyph(Character.toUpperCase(wanted));
+			return material != null && inside(x, y) && cells[y][x] == material.last();
+		}
+		return glyphAt(x, y, cells) == wanted;
+	}
+
+	/**
 	 * What a position looks like to the pattern matcher.
 	 * <p>
-	 * Lateral and bottom borders count as solid, so particles stay inside the
-	 * canvas, while everything above the grid counts as empty, so particles can
-	 * fall in from the top.
+	 * Lateral and bottom borders count as a particle, so particles stay inside
+	 * the canvas, while everything above the grid counts as empty, so particles
+	 * can fall in from the top.
 	 * </p>
 	 *
 	 * @param x     the x coordinate to inspect, may be outside the grid
 	 * @param y     the y coordinate to inspect, may be outside the grid
 	 * @param cells the cell data
-	 * @return {@link Pattern#SOLID} if the position holds a particle or is a
-	 *         border, {@link Pattern#EMPTY} otherwise
+	 * @return the glyph of the material of the position, a border counting as
+	 *         {@link Material#PARTICLE} and empty space as {@link Material#EMPTY}
 	 */
-	private char occupancy(int x, int y, int[][] cells) {
+	private char glyphAt(int x, int y, int[][] cells) {
 		if (x < 0 || x >= cols || y >= rows)
-			return Pattern.SOLID; // lateral and bottom borders are solid
+			return Material.PARTICLE; // lateral and bottom borders are solid
 		if (y < 0)
-			return Pattern.EMPTY; // above the grid counts as free space
-		return cells[y][x] == 0 ? Pattern.EMPTY : Pattern.SOLID;
+			return Material.EMPTY; // above the grid counts as free space
+		return Material.glyphOf[cells[y][x]];
 	}
 
 	/**
@@ -261,70 +395,103 @@ class Transition {
 	}
 
 	/**
-	 * A step rule: the 3x3 neighbourhood that triggers it and the 3x3 result that
-	 * is written into the next generation when it does.
+	 * A step rule: the drawing of the neighbourhood that triggers it and the
+	 * drawing of what that neighbourhood becomes.
 	 * <p>
-	 * Both patterns use the glyphs of {@link Pattern}, so a rule reads as two
-	 * stacked drawings: how the neighbourhood looks now and how it looks after
-	 * the step.
+	 * Both drawings have the same shape and use the glyphs of {@link Pattern}, so
+	 * a rule reads as two stacked pictures: how the neighbourhood looks now and
+	 * how it looks after the step. The cell of the particle is the middle one of
+	 * those pictures, which is why the size of the drawing can be anything odd
+	 * without the rules saying where their centre is.
 	 * </p>
 	 */
 	private static class Step {
 		final String[] match;
 		final String[] result;
+		/** Column of the cell of the particle in both drawings. */
+		final int anchorX;
+		/** Row of the cell of the particle in both drawings. */
+		final int anchorY;
 		/** Number of {@code x} of the result: they share the particle between them. */
 		final int shared;
+		/** Number of {@code o} of the result: each one rolls its own dice. */
+		final int copies;
 
 		Step(String[] match, String[] result) {
+			if (result.length != match.length)
+				throw new IllegalArgumentException("The result must have as many rows as the match");
+			for (int row = 0; row < match.length; row++)
+				if (result[row].length() != match[row].length())
+					throw new IllegalArgumentException("The result must have the same shape as the match");
 			this.match = match;
 			this.result = result;
-			this.shared = countShared(result);
+			this.anchorX = match[0].length() / 2;
+			this.anchorY = match.length / 2;
+			this.shared = count(result, Pattern.SHARED);
+			this.copies = count(result, Pattern.REPEATED);
 		}
 
 		/**
-		 * Number of {@code x} cells of a result.
+		 * Number of cells of a result drawn with one glyph.
 		 * <p>
-		 * They share the particle between them, so this is both the faces of the
-		 * die rolled for each one and what makes their chances add up to one. It
-		 * only depends on the rule, so it is counted once here instead of on every
-		 * step of every particle.
+		 * It is both the faces of the die rolled for each one and what makes their
+		 * chances add up to one. It only depends on the rule, so it is counted once
+		 * here instead of on every step of every particle.
 		 * </p>
 		 *
-		 * @param result the 3x3 result of the rule
-		 * @return the number of {@code x} cells, 0 when there is none
+		 * @param result the result of the rule
+		 * @param glyph  the glyph to count
+		 * @return the number of cells with that glyph, 0 when there is none
 		 */
-		private static int countShared(String[] result) {
-			int shared = 0;
+		private static int count(String[] result, char glyph) {
+			int count = 0;
 			for (String row : result)
 				for (int px = 0; px < row.length(); px++)
-					if (row.charAt(px) == Pattern.SHARED)
-						shared++;
-			return shared;
+					if (row.charAt(px) == glyph)
+						count++;
+			return count;
 		}
 	}
 
 	/**
-	 * Fixed 3x3 neighbourhoods used to decide how a particle moves.
+	 * The drawings used to decide what happens to a particle.
 	 * <p>
-	 * Each pattern is written as three rows of three characters, so the drawing
-	 * below is the pattern itself:
+	 * Each rule is written as rows of characters, so the drawing below is the rule
+	 * itself. In a match:
 	 * <ul>
-	 *   <li>{@link #DONT_CARE}: the neighbour can be anything</li>
-	 *   <li>{@link #SOLID}: particle present (borders count as solid too)</li>
-	 *   <li>{@link #EMPTY}: free space</li>
-	 *   <li>{@link #SHARED}: like {@link #SOLID}, but it shares the probability
-	 *       with the other {@code x} cells of the same result</li>
+	 *   <li>{@link Material#ANY}: the neighbour can be anything</li>
+	 *   <li>{@link Material#PARTICLE}: any particle (borders count as one too)</li>
+	 *   <li>{@link Material#EMPTY}: free space</li>
+	 *   <li>a material glyph: a value of that band</li>
+	 *   <li>a lowercase material: the last value of that band, so the material is
+	 *       still there but it has spent its life</li>
 	 * </ul>
-	 * In a match the center character (row 1, column 1) is the particle being
-	 * evaluated, so every match has a {@link #SOLID} there. In a result that same
-	 * position is what the cell of the particle becomes.
+	 * In a result the same glyphs say what gets written:
+	 * <ul>
+	 *   <li>{@link #SHARED}: the particle, shared between the {@code x} cells</li>
+	 *   <li>{@link #REPEATED}: the particle, once per {@code o} cell that wins its
+	 *       own dice</li>
+	 *   <li>{@link #WRAPS}, {@link #CLAMPS}, {@link #BURNS}, {@link #FEEDS}: the
+	 *       particle after walking its life</li>
+	 *   <li>a material glyph: a new particle of that material</li>
+	 * </ul>
+	 * The centre of a drawing is its middle character, so in a match it is the
+	 * particle being evaluated and in a result the cell that particle leaves.
 	 * </p>
 	 */
 	private static class Pattern {
-		private static final char DONT_CARE = '?';
-		private static final char SOLID = 'X';
-		private static final char EMPTY = '_';
+		/** Share the particle between these cells: only one of them wins. */
 		private static final char SHARED = 'x';
+		/** Roll the dice in each of these cells: several of them can win. */
+		private static final char REPEATED = 'o';
+		/** One step towards the end of the band, wrapping around at the end. */
+		private static final char WRAPS = 'V';
+		/** One step towards the end of the band, staying there when it ends. */
+		private static final char CLAMPS = 'W';
+		/** Half of the life that is left. */
+		private static final char BURNS = 'r';
+		/** Half of the life already spent. */
+		private static final char FEEDS = 'l';
 
 		/**
 		 * Free space on the right of the particle: a hit pushes it one cell right.
@@ -351,6 +518,143 @@ class Transition {
 						"???",
 						"X_?",
 						"???" });
+
+		/**
+		 * Fire that has spent its life becomes smoke. Nothing disappears on its
+		 * own: the end of a life is always a rule that can be read.
+		 */
+		private static final Step FIRE_END_STEP = new Step(
+				new String[] { "f" },
+				new String[] { "H" });
+
+		/** Smoke that has spent its life disappears. */
+		private static final Step SMOKE_END_STEP = new Step(
+				new String[] { "h" },
+				new String[] { "_" });
+
+		/** Wood that has spent its life catches fire. */
+		private static final Step WOOD_END_STEP = new Step(
+				new String[] { "m" },
+				new String[] { "F" });
+
+		/**
+		 * Wood with fire above burns: it walks towards the end of its band one step
+		 * per generation, so its colour tells how much wood is left. Fire on any of
+		 * its four sides does the same, which is how a flame runs through a log.
+		 */
+		private static final Step WOOD_BURNS_ABOVE_STEP = new Step(
+				new String[] {
+						"?F?",
+						"?M?",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/** Wood with fire below burns. */
+		private static final Step WOOD_BURNS_BELOW_STEP = new Step(
+				new String[] {
+						"???",
+						"?M?",
+						"?F?" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+		/** Wood with fire at its left burns. */
+		private static final Step WOOD_BURNS_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"FM?",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+		/** Wood with fire at its right burns. */
+		private static final Step WOOD_BURNS_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"?MF",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/**
+		 * Fire with wood below feeds on it: it recovers half of the life it has
+		 * already spent, which is what keeps a flame alive while there is fuel.
+		 */
+		private static final Step FIRE_FEEDS_STEP = new Step(
+				new String[] {
+						"???",
+						"?F?",
+						"?M?" },
+				new String[] {
+						"???",
+						"?l?",
+						"???" });
+
+		/**
+		 * Wood does not fall: it is the only material that stays where it is put.
+		 * The result is the particle and not the material, so the wood keeps the
+		 * life it has already lost.
+		 */
+		private static final Step WOOD_STAYS_STEP = new Step(
+				new String[] { "M" },
+				new String[] { "X" });
+
+		/** Fire with free space above rises one row, one step older. */
+		private static final Step FIRE_RISES_STEP = new Step(
+				new String[] {
+						"?_?",
+						"?F?",
+						"???" },
+				new String[] {
+						"?W?",
+						"?_?",
+						"???" });
+
+		/**
+		 * Fire that cannot rise spreads: it ages in place and copies itself to the
+		 * four cells around it, each one with one chance in four, so on average it
+		 * leaves one flame behind and the burn neither grows nor dies on its own.
+		 */
+		private static final Step FIRE_SPREADS_STEP = new Step(
+				new String[] {
+						"???",
+						"?F?",
+						"???" },
+				new String[] {
+						"?o?",
+						"oWo",
+						"?o?" });
+
+		/** Smoke rises like fire, but it neither spreads nor creates anything. */
+		private static final Step SMOKE_RISES_STEP = new Step(
+				new String[] {
+						"?_?",
+						"?H?",
+						"???" },
+				new String[] {
+						"?W?",
+						"?_?",
+						"???" });
+
+		/**
+		 * Smoke that cannot rise ages where it is.
+		 * <p>
+		 * A material with life needs a rule that ages it even when it cannot move:
+		 * the smoke of a fire that burnt under the sand has nowhere to go, and
+		 * without this rule it would never reach its last value, so it would stay for
+		 * ever as a grey grain holding the sand up.
+		 * </p>
+		 */
+		private static final Step SMOKE_AGES_STEP = new Step(
+				new String[] { "?H?" },
+				new String[] { "?W?" });
 
 		/** Free fall: the space below the particle is empty, so it drops one row. */
 		private static final Step FREE_FALL_STEP = new Step(
@@ -397,6 +701,42 @@ class Transition {
 						"??X" });
 
 		/**
+		 * Water with free space at both sides flows to one of them: it levels its
+		 * surface instead of piling up in a pyramid like sand.
+		 */
+		private static final Step WATER_FLOWS_BOTH_STEP = new Step(
+				new String[] {
+						"???",
+						"_A_",
+						"XXX" },
+				new String[] {
+						"???",
+						"x_x",
+						"???" });
+
+		/** Water with free space only at its left flows there. */
+		private static final Step WATER_FLOWS_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"_AX",
+						"XXX" },
+				new String[] {
+						"???",
+						"X_?",
+						"???" });
+
+		/** Water with free space only at its right flows there. */
+		private static final Step WATER_FLOWS_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"XA_",
+						"XXX" },
+				new String[] {
+						"???",
+						"?_X",
+						"???" });
+
+		/**
 		 * Something below and no free diagonal (the bottom border counts as solid
 		 * too): the particle stacks on top of the pile.
 		 */
@@ -411,15 +751,36 @@ class Transition {
 						"???" });
 
 		/**
-		 * Step rules in the order they are tried: the first neighbourhood that
-		 * matches decides the move, so the table goes from the most open movement
-		 * (fall) to the blocked one (stack).
+		 * Rules in the order they are tried: the first one that matches decides
+		 * the step, so the table is a priority list.
+		 * <p>
+		 * The transitions of life go first, so a particle that has spent its life
+		 * becomes what its rule says before it moves. Then every material that does
+		 * not behave like a grain of sand says what it does, and at the end the
+		 * generic gravity that any particle obeys.
+		 * </p>
 		 */
 		private static final Step[] STEPS = {
+				FIRE_END_STEP,
+				SMOKE_END_STEP,
+				WOOD_END_STEP,
+				WOOD_BURNS_ABOVE_STEP,
+				WOOD_BURNS_BELOW_STEP,
+				WOOD_BURNS_LEFT_STEP,
+				WOOD_BURNS_RIGHT_STEP,
+				FIRE_FEEDS_STEP,
+				WOOD_STAYS_STEP,
+				FIRE_RISES_STEP,
+				FIRE_SPREADS_STEP,
+				SMOKE_RISES_STEP,
+				SMOKE_AGES_STEP,
 				FREE_FALL_STEP,
 				SLIDE_BOTH_STEP,
 				SLIDE_LEFT_STEP,
 				SLIDE_RIGHT_STEP,
+				WATER_FLOWS_BOTH_STEP,
+				WATER_FLOWS_LEFT_STEP,
+				WATER_FLOWS_RIGHT_STEP,
 				STAY_STEP };
 	}
 

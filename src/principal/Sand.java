@@ -3,13 +3,23 @@ package principal;
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.paint.Color;
 import javafx.stage.Stage;
+import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Main JavaFX application for the falling sand particle simulation.
@@ -23,6 +33,7 @@ import javafx.scene.input.MouseButton;
  * <ul>
  *   <li>Real-time particle physics simulation</li>
  *   <li>Interactive mouse controls for adding particles and applying forces</li>
+ *   <li>A material selector, with one button and one key per material</li>
  *   <li>60 FPS animation loop</li>
  *   <li>Restart functionality</li>
  *   <li>Configurable window size via command-line parameters</li>
@@ -32,9 +43,11 @@ import javafx.scene.input.MouseButton;
  * @see Transition
  */
 public class Sand extends Application {
+	private static final String TITLE = "SandFX";
 	private static final int DEFAULT_WIDTH = 800;
 	private static final int DEFAULT_HEIGHT = 600;
 	private static final int BUTTON_HEIGHT = 25;
+	private static final int BUTTON_SPACING = 6;
 
 	private int canvasWidth;
 	private int canvasHeight;
@@ -63,7 +76,7 @@ public class Sand extends Application {
 		Parameters params = getParameters();
 		parseSize(params);
 
-		primaryStage.setTitle("SandFX");
+		primaryStage.setTitle(TITLE);
 
 		// Create and initialize
 		initialize();
@@ -77,20 +90,62 @@ public class Sand extends Application {
 		restartButton.setPrefHeight(BUTTON_HEIGHT);
 		restartButton.setFocusTraversable(false);
 
+		// One button per material, tinted with its own colour. The keys and the
+		// buttons share the map, so pressing "F" is the same as pressing the
+		// button of the fire, and both report the change to the renderer
+		ToggleGroup materialButtons = new ToggleGroup();
+		Map<Character, ToggleButton> buttonsByGlyph = new HashMap<>();
+		HBox toolbar = new HBox(BUTTON_SPACING, restartButton);
+		toolbar.setAlignment(Pos.CENTER_LEFT);
+		toolbar.setPadding(new Insets(4, 8, 4, 8));
+		for (Material material : Material.LIST) {
+			ToggleButton button = new ToggleButton(String.valueOf(material.glyph));
+			button.setUserData(material);
+			button.setToggleGroup(materialButtons);
+			button.setPrefHeight(BUTTON_HEIGHT);
+			button.setFocusTraversable(false);
+			button.setStyle(css(material.tint()));
+			buttonsByGlyph.put(material.glyph, button);
+			toolbar.getChildren().add(button);
+		}
+		materialButtons.selectedToggleProperty().addListener((observable, previous, current) -> {
+			if (current == null) {
+				// Clicking the selected button would leave the brush without a
+				// material: the current one is put back
+				materialButtons.selectToggle(previous);
+				return;
+			}
+			Material material = (Material) current.getUserData();
+			renderer.selectMaterial(material.glyph);
+			primaryStage.setTitle(TITLE + " - " + material.glyph);
+		});
+		materialButtons.selectToggle(buttonsByGlyph.get(Material.LIST[0].glyph));
+
 		// Layout
 		BorderPane root = new BorderPane();
 		root.setCenter(canvas);
-		root.setBottom(restartButton);
+		root.setBottom(toolbar);
 
-		// Create scene and show
-		Scene scene = new Scene(root, canvasWidth, canvasHeight + BUTTON_HEIGHT);
+		// Create scene and show. The size is not given here: the canvas knows its
+		// own, the toolbar takes what its buttons need and the scene asks the root
+		// for the total. Giving it by hand would clip the toolbar as soon as the
+		// buttons needed one pixel more than expected
+		Scene scene = new Scene(root);
 		scene.setOnKeyPressed(e -> {
-			if (e.getCode() == javafx.scene.input.KeyCode.SPACE && renderer != null) {
+			if (renderer == null)
+				return;
+			if (e.getCode() == KeyCode.SPACE) {
 				renderer.setSpacePressed(true);
+				return;
+			}
+			if (e.getCode().isLetterKey()) {
+				ToggleButton button = buttonsByGlyph.get(Character.toUpperCase(e.getCode().getChar().charAt(0)));
+				if (button != null)
+					button.setSelected(true);
 			}
 		});
 		scene.setOnKeyReleased(e -> {
-			if (e.getCode() == javafx.scene.input.KeyCode.SPACE && renderer != null) {
+			if (e.getCode() == KeyCode.SPACE && renderer != null) {
 				renderer.setSpacePressed(false);
 			}
 		});
@@ -189,6 +244,22 @@ public class Sand extends Application {
 		if (renderer != null) {
 			renderer.restart();
 		}
+	}
+
+	/**
+	 * Inline style of a button tinted with a colour.
+	 * <p>
+	 * The default stylesheet of JavaFX derives the shades of a control from
+	 * {@code -fx-base}, so a single property tints the whole button, both pressed
+	 * and released, without setting a background of its own.
+	 * </p>
+	 *
+	 * @param color the colour of the material the button selects
+	 * @return the style to set on the button
+	 */
+	private static String css(Color color) {
+		return String.format("-fx-base: #%02x%02x%02x;", (int) (color.getRed() * 255), (int) (color.getGreen() * 255),
+				(int) (color.getBlue() * 255));
 	}
 
 	/**
