@@ -1,7 +1,7 @@
 package principal;
 
 /**
- * Defines the rules of the sand particle simulation.
+ * Defines the rules of the materials simulation.
  * <p>
  * Every rule is a match and a result: the neighbourhood that triggers it and
  * what that neighbourhood becomes, written with the glyphs of {@link Pattern}.
@@ -18,15 +18,17 @@ package principal;
  *       until the rule that transforms the particle fires</li>
  *   <li>Creation, by copying a particle with {@code o} or by writing a material
  *       where there was nothing</li>
+ *   <li>The slow sink of the sand: a drop of water with a grain on top of it
+ *       holds it for a moment, and then the two swap places</li>
  *   <li>Hit forces, that move particles sideways</li>
  * </ul>
  * </p>
  *
- * @see Sand
- * @see Renderer
+ * @see MaterialSimulator
+ * @see WorldRenderer
  * @see Material
  */
-class Transition {
+class MaterialRules {
 	/** Hit force pushing particles towards decreasing x. */
 	static final int LEFT = -1;
 	/** Hit force pushing particles towards increasing x. */
@@ -38,12 +40,12 @@ class Transition {
 	private final int rows;
 
 	/**
-	 * Constructs a new Transition object with the specified dimensions.
+	 * Constructs a new MaterialRules object with the specified dimensions.
 	 * 
 	 * @param cols number of columns of the simulation grid
 	 * @param rows number of rows of the simulation grid
 	 */
-	public Transition(int cols, int rows) {
+	public MaterialRules(int cols, int rows) {
 		this.cols = cols;
 		this.rows = rows;
 	}
@@ -520,6 +522,105 @@ class Transition {
 						"???" });
 
 		/**
+		 * Water on any of the eight sides of the fire puts it out: the flame is
+		 * consumed where it is instead of rising or spreading, so a fire cannot
+		 * jump over a drop of water.
+		 * <p>
+		 * The eight drawings are the same rule seen from each side, because a
+		 * match says what each cell holds and cannot say "water anywhere around".
+		 * They are also why the water does not need to be the one that kills the
+		 * fire: a particle always writes itself at the end of its own step, so the
+		 * flame is the only one that can decide not to come back.
+		 * </p>
+		 */
+		private static final Step FIRE_DIES_UNDER_WATER_STEP = new Step(
+				new String[] {
+						"?A?",
+						"?F?",
+						"???" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water below puts the flame out. */
+		private static final Step FIRE_DIES_OVER_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?F?",
+						"?A?" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water at its left puts the flame out. */
+		private static final Step FIRE_DIES_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"AF?",
+						"???" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water at its right puts the flame out. */
+		private static final Step FIRE_DIES_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"?FA",
+						"???" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water at the upper left puts the flame out. */
+		private static final Step FIRE_DIES_UPPER_LEFT_STEP = new Step(
+				new String[] {
+						"A??",
+						"?F?",
+						"???" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water at the upper right puts the flame out. */
+		private static final Step FIRE_DIES_UPPER_RIGHT_STEP = new Step(
+				new String[] {
+						"??A",
+						"?F?",
+						"???" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water at the lower left puts the flame out. */
+		private static final Step FIRE_DIES_LOWER_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"?F?",
+						"A??" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/** Water at the lower right puts the flame out. */
+		private static final Step FIRE_DIES_LOWER_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"?F?",
+						"??A" },
+				new String[] {
+						"???",
+						"?_?",
+						"???" });
+
+		/**
 		 * Fire that has spent its life becomes smoke. Nothing disappears on its
 		 * own: the end of a life is always a rule that can be read.
 		 */
@@ -656,6 +757,96 @@ class Transition {
 				new String[] { "?H?" },
 				new String[] { "?W?" });
 
+		/**
+		 * Water with a grain of sand on top of it stops being a drop for a while: it
+		 * becomes the water that is holding the grain, a state with a band of its
+		 * own that counts turns instead of a life.
+		 * <p>
+		 * Nothing is moved and nothing is consumed here. The same drop keeps its
+		 * cell and turns into the mark, so the water of the world is the same; the
+		 * grain rests on it as it rests on any particle, and the swap comes later.
+		 * </p>
+		 */
+		private static final Step WATER_IS_HELD_STEP = new Step(
+				new String[] {
+						"?S?",
+						"?A?",
+						"???" },
+				new String[] {
+						"???",
+						"?N?",
+						"???" });
+
+		/**
+		 * The mark ages while the grain is still on top of it: one step towards the
+		 * last value of its band per turn, and that walk is the wait of the grain.
+		 * <p>
+		 * The walk cannot go past the last value, so a grain that stays put for ever
+		 * would keep the drop marked at its darkest; what bounds the wait is the
+		 * size of the band, not the rule.
+		 * </p>
+		 */
+		private static final Step HELD_AGES_STEP = new Step(
+				new String[] {
+						"?S?",
+						"?N?",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/**
+		 * Sand on top of a mark that has waited long enough sinks into it: it empties
+		 * its own cell and claims the one below, which is where the drop was.
+		 * <p>
+		 * The two rules of the swap are written the way round that keeps both
+		 * particles. This one empties the cell of the grain, so the water can climb
+		 * into it, and the one of the water writes nothing in its own cell, so the
+		 * grain that has just landed there is not wiped out. It works because the
+		 * rows are walked from the top: the grain is always stepped first, and the
+		 * cell it leaves is empty when the water asks for it.
+		 * </p>
+		 */
+		private static final Step SAND_SINKS_STEP = new Step(
+				new String[] {
+						"???",
+						"?S?",
+						"?n?" },
+				new String[] {
+						"???",
+						"?_?",
+						"?X?" });
+
+		/**
+		 * The mark of a drop that has waited long enough climbs into the cell the
+		 * grain has just left, and it climbs as a mark of the first value: {@code V}
+		 * sends it back to the start of its band, so the next grain that lands on it
+		 * waits exactly as long.
+		 * <p>
+		 * Without that the wait would be paid only once: from the second grain on the
+		 * mark would be at its last value, every grain would sink in a single step
+		 * and the column would fall as fast as in the air.
+		 * </p>
+		 */
+		private static final Step HELD_RISES_STEP = new Step(
+				new String[] {
+						"?S?",
+						"?n?",
+						"???" },
+				new String[] {
+						"?V?",
+						"???",
+						"???" });
+
+		/**
+		 * A mark with no grain on top of it is a drop again: the sand slid away, so
+		 * there is nothing left to swap with.
+		 */
+		private static final Step HELD_RELEASES_STEP = new Step(
+				new String[] { "?N?" },
+				new String[] { "?A?" });
+
 		/** Free fall: the space below the particle is empty, so it drops one row. */
 		private static final Step FREE_FALL_STEP = new Step(
 				new String[] {
@@ -701,14 +892,66 @@ class Transition {
 						"??X" });
 
 		/**
+		 * Water with fire above jumps into the cell the flame leaves: the drop
+		 * follows the fire it has just put out instead of letting a hole open
+		 * over it.
+		 * <p>
+		 * Only upwards, and only these three drawings, because the flame above is
+		 * stepped first: it is already gone when the water is looked at, so the
+		 * cell is free and nothing can be written over the drop. The rest of the
+		 * holes need no rule, they are below or at the side and the water fills
+		 * them falling and flowing like it fills any other.
+		 * </p>
+		 */
+		private static final Step WATER_PUTS_OUT_ABOVE_STEP = new Step(
+				new String[] {
+						"?F?",
+						"?A?",
+						"???" },
+				new String[] {
+						"?X?",
+						"?_?",
+						"???" });
+
+		/** Water with fire at the upper left jumps into the cell of the flame. */
+		private static final Step WATER_PUTS_OUT_UPPER_LEFT_STEP = new Step(
+				new String[] {
+						"F??",
+						"?A?",
+						"???" },
+				new String[] {
+						"X??",
+						"?_?",
+						"???" });
+
+		/** Water with fire at the upper right jumps into the cell of the flame. */
+		private static final Step WATER_PUTS_OUT_UPPER_RIGHT_STEP = new Step(
+				new String[] {
+						"??F",
+						"?A?",
+						"???" },
+				new String[] {
+						"??X",
+						"?_?",
+						"???" });
+
+		/**
 		 * Water with free space at both sides flows to one of them: it levels its
 		 * surface instead of piling up in a pyramid like sand.
+		 * <p>
+		 * It goes before the diagonal slides and after the free fall, so a drop that
+		 * has landed opens sideways first and only rolls down a slope when it has no
+		 * free side left. The row below is asked only for its own cell: the free fall
+		 * has already been tried, so the space below is taken, and the diagonals only
+		 * block the levelling over an uneven bed, which is where a liquid should level
+		 * the most.
+		 * </p>
 		 */
 		private static final Step WATER_FLOWS_BOTH_STEP = new Step(
 				new String[] {
 						"???",
 						"_A_",
-						"XXX" },
+						"?X?" },
 				new String[] {
 						"???",
 						"x_x",
@@ -719,7 +962,7 @@ class Transition {
 				new String[] {
 						"???",
 						"_AX",
-						"XXX" },
+						"?X?" },
 				new String[] {
 						"???",
 						"X_?",
@@ -730,7 +973,7 @@ class Transition {
 				new String[] {
 						"???",
 						"XA_",
-						"XXX" },
+						"?X?" },
 				new String[] {
 						"???",
 						"?_X",
@@ -756,11 +999,36 @@ class Transition {
 		 * <p>
 		 * The transitions of life go first, so a particle that has spent its life
 		 * becomes what its rule says before it moves. Then every material that does
-		 * not behave like a grain of sand says what it does, and at the end the
-		 * generic gravity that any particle obeys.
+		 * not behave like a grain of sand says what it does, and after it the
+		 * generic gravity that any particle obeys. The water putting out the fire
+		 * goes before all of them: a flame that touches water never gets to rise
+		 * or to spread.
+		 * </p>
+		 * <p>
+		 * Inside the generic gravity the water levelling goes before the diagonal
+		 * slides: a liquid has no angle of repose, so a drop that has landed opens
+		 * sideways and only rolls down a slope when it has no free side left. With
+		 * the diagonals first the water piles up in the same cone as the sand.
+		 * </p>
+		 * <p>
+		 * The rules of the drop that is holding a grain go together and before the
+		 * free fall: the mark is a state of the water and not a material of its
+		 * own, so the water of a pond is still water, and what moves in the swap
+		 * is the grain going down, not the drop going up. The one that climbs
+		 * goes before the one that ages: the ageing rule matches the whole band,
+		 * the last value included, so after it the mark of a drop that has waited
+		 * would never rise.
 		 * </p>
 		 */
 		private static final Step[] STEPS = {
+				FIRE_DIES_UNDER_WATER_STEP,
+				FIRE_DIES_OVER_WATER_STEP,
+				FIRE_DIES_LEFT_STEP,
+				FIRE_DIES_RIGHT_STEP,
+				FIRE_DIES_UPPER_LEFT_STEP,
+				FIRE_DIES_UPPER_RIGHT_STEP,
+				FIRE_DIES_LOWER_LEFT_STEP,
+				FIRE_DIES_LOWER_RIGHT_STEP,
 				FIRE_END_STEP,
 				SMOKE_END_STEP,
 				WOOD_END_STEP,
@@ -774,13 +1042,21 @@ class Transition {
 				FIRE_SPREADS_STEP,
 				SMOKE_RISES_STEP,
 				SMOKE_AGES_STEP,
+				WATER_PUTS_OUT_ABOVE_STEP,
+				WATER_PUTS_OUT_UPPER_LEFT_STEP,
+				WATER_PUTS_OUT_UPPER_RIGHT_STEP,
+				WATER_IS_HELD_STEP,
+				HELD_RISES_STEP,
+				HELD_AGES_STEP,
+				SAND_SINKS_STEP,
+				HELD_RELEASES_STEP,
 				FREE_FALL_STEP,
-				SLIDE_BOTH_STEP,
-				SLIDE_LEFT_STEP,
-				SLIDE_RIGHT_STEP,
 				WATER_FLOWS_BOTH_STEP,
 				WATER_FLOWS_LEFT_STEP,
 				WATER_FLOWS_RIGHT_STEP,
+				SLIDE_BOTH_STEP,
+				SLIDE_LEFT_STEP,
+				SLIDE_RIGHT_STEP,
 				STAY_STEP };
 	}
 

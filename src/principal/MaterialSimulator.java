@@ -22,11 +22,12 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Main JavaFX application for the falling sand particle simulation.
+ * Main JavaFX application of the materials simulator.
  * <p>
  * This application creates a window with a canvas where users can interact with
- * a falling sand physics simulation. Users can add particles by moving the mouse
- * over the canvas and apply forces by clicking. The simulation runs at 60 FPS.
+ * a falling materials physics simulation. Users can add particles by moving the
+ * mouse over the canvas and apply forces by clicking. The simulation runs at
+ * 60 FPS.
  * </p>
  * <p>
  * Features:
@@ -39,11 +40,11 @@ import java.util.Map;
  *   <li>Configurable window size via command-line parameters</li>
  * </ul>
  * 
- * @see Renderer
- * @see Transition
+ * @see WorldRenderer
+ * @see MaterialRules
  */
-public class Sand extends Application {
-	private static final String TITLE = "SandFX";
+public class MaterialSimulator extends Application {
+	private static final String TITLE = "MaterialSimulator";
 	private static final int DEFAULT_WIDTH = 800;
 	private static final int DEFAULT_HEIGHT = 600;
 	private static final int BUTTON_HEIGHT = 25;
@@ -52,7 +53,7 @@ public class Sand extends Application {
 	private int canvasWidth;
 	private int canvasHeight;
 	private Canvas canvas;
-	private Renderer renderer;
+	private WorldRenderer renderer;
 	private AnimationTimer animationTimer;
 	private boolean finished = false;
 
@@ -92,13 +93,17 @@ public class Sand extends Application {
 
 		// One button per material, tinted with its own colour. The keys and the
 		// buttons share the map, so pressing "F" is the same as pressing the
-		// button of the fire, and both report the change to the renderer
+		// button of the fire, and both report the change to the renderer. A
+		// material the brush cannot paint, such as the water that is holding a
+		// grain, is left out of both
 		ToggleGroup materialButtons = new ToggleGroup();
 		Map<Character, ToggleButton> buttonsByGlyph = new HashMap<>();
 		HBox toolbar = new HBox(BUTTON_SPACING, restartButton);
 		toolbar.setAlignment(Pos.CENTER_LEFT);
 		toolbar.setPadding(new Insets(4, 8, 4, 8));
 		for (Material material : Material.LIST) {
+			if (!material.paintable)
+				continue;
 			ToggleButton button = new ToggleButton(String.valueOf(material.glyph));
 			button.setUserData(material);
 			button.setToggleGroup(materialButtons);
@@ -188,7 +193,7 @@ public class Sand extends Application {
 		GraphicsContext gc = canvas.getGraphicsContext2D();
 		finished = false;
 
-		renderer = new Renderer(gc, canvasWidth, canvasHeight);
+		renderer = new WorldRenderer(gc, canvasWidth, canvasHeight);
 
 		animationTimer = new AnimationTimer() {
 			@Override

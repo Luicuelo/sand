@@ -10,7 +10,21 @@ import javafx.scene.paint.Color;
  * position inside the band is the life of the particle, and the {@code V},
  * {@code W}, {@code r} and {@code l} glyphs walk it. The bands are laid out
  * from index 1 in the order of {@link #LIST}, so configuring a material is
- * writing its entry in that list: glyph, size and colours.
+ * writing its entry in that list: glyph, size, clock and colours.
+ * </p>
+ * <p>
+ * Each material also carries its own clock: how many steps of the world pass
+ * between two evaluations of one of its particles. A grain of sand is looked at
+ * one step in six and a drop of water in every step, so the liquid falls and
+ * spreads six times faster than the grain. The clock is not the speed of the
+ * world: the renderer takes several steps per frame, and that is what makes
+ * everything faster or slower at once. What the clocks have to keep is the
+ * alternation of the sweep, which swaps sides every frame: the question is in
+ * which frames the turns of a material land, because one whose turns always land
+ * on the same side reads its rows in the same direction every time and pushes its
+ * pile sideways. A grain is due one step in six and a frame has four, so its
+ * turns fall in frames 0, 1, 3, 4, 6... and see both sides; an even quotient
+ * between clock and steps per frame would keep it on one side.
  * </p>
  * <p>
  * {@link #glyphOf} holds the same information the other way round: from the
@@ -38,24 +52,52 @@ class Material {
 	 * spread is how many values, counted from the first of the band, a new
 	 * particle may take: the wider it is, the less the grains look like a flat
 	 * sheet, and the more life a particle of a material with life loses at
-	 * birth. The colours are the stops the band is interpolated through.
+	 * birth. The number after the spread is the clock: how many steps of the
+	 * world pass between two evaluations of one particle. The colours are the
+	 * stops the band is interpolated through.
+	 * </p>
+	 * <p>
+	 * The clock is what makes the difference between a grain and a drop: the
+	 * sand is looked at one step in six and the water in every one, so the
+	 * water falls six times faster and reaches the bottom of the screen
+	 * first. The materials with life stay at three, so their lives are still
+	 * counted in steps and the fire still climbs a third of the screen, at the
+	 * pace it had before the world was sped up. The turns of a material fall one
+	 * every clock steps, so an even quotient between its clock and the steps per
+	 * frame would keep every one of them on the same side of the sweep.
 	 * </p>
 	 */
 	static final Material[] LIST = {
-			new Material('S', 25, false, 25, "#f7e8a4", "#e6cd66", "#b39a3a"),
-			new Material('A', 20, false, 20, "#9ed7f7", "#4c9bd6", "#1b5188"),
-			new Material('M', 30, true, 9, "#d8b478", "#a1713c", "#5d3d20"),
-			new Material('F', 80, true, 6, "#fff6b0", "#ffb020", "#cc2a08"),
-			new Material('H', 12, true, 4, "#8c8c8c", "#bdbdbd", "#e2e2e2") };
+			new Material('S', 25, false, 25, 6, "#f7e8a4", "#e6cd66", "#b39a3a"),
+			new Material('A', 20, false, 20, 1, "#9ed7f7", "#4c9bd6", "#1b5188"),
+			new Material('M', 30, true, 9, 3, "#d8b478", "#a1713c", "#5d3d20"),
+			new Material('F', 30, true, 6, 3, "#fff6b0", "#ffb020", "#cc2a08"),
+			new Material('H', 80, true, 6, 3, "#8c8c8c", "#bdbdbd", "#e2e2e2"),
+			// The water that is holding a grain of sand on top of it, waiting to
+			// swap places with it. The band is the wait and not a life: the walk
+			// from the first value to the last is the turns the grain is held,
+			// so the band is short and the colours are almost the ones of water,
+			// and it is not painted by the brush because nobody puts it there
+			// but a rule
+			new Material('N', 6, false, 1, 6, false, "#8fcdf2", "#4591cd", "#1a4c80") };
 
 	/** Glyph of the material that owns each palette value (0: empty). */
 	static final char[] glyphOf = new char[PALETTE_SIZE];
 
+	/**
+	 * Steps between two evaluations of the material that owns each palette
+	 * value. Empty cells get 1, a clock that never divides by zero.
+	 */
+	private static final int[] stepPeriodOf = new int[PALETTE_SIZE];
+
 	static {
 		glyphOf[0] = EMPTY;
+		stepPeriodOf[0] = 1;
 		for (Material material : LIST)
-			for (int value = material.first; value <= material.last(); value++)
+			for (int value = material.first; value <= material.last(); value++) {
 				glyphOf[value] = material.glyph;
+				stepPeriodOf[value] = material.stepPeriod;
+			}
 		if (next > PALETTE_SIZE - 1)
 			throw new IllegalStateException("The material bands need " + (next - 1) + " values and the palette has "
 					+ (PALETTE_SIZE - 1));
@@ -68,16 +110,34 @@ class Material {
 	final boolean life;
 	/** Values, counted from the first of the band, that a new particle may take. */
 	final int spread;
+	/**
+	 * Steps of the world that pass between two evaluations of one of its
+	 * particles.
+	 */
+	final int stepPeriod;
+	/**
+	 * True when the brush can put the material in the world. A state that only
+	 * a rule writes, such as the water that is holding a grain, is not offered
+	 * in the selector.
+	 */
+	final boolean paintable;
 	/** Colours the band is interpolated through. */
 	final Color[] stops;
 	/** First palette value of the band. */
 	final int first;
 
-	private Material(char glyph, int size, boolean life, int spread, String... stops) {
+	private Material(char glyph, int size, boolean life, int spread, int stepPeriod, String... stops) {
+		this(glyph, size, life, spread, stepPeriod, true, stops);
+	}
+
+	private Material(char glyph, int size, boolean life, int spread, int stepPeriod, boolean paintable,
+			String... stops) {
 		this.glyph = glyph;
 		this.size = size;
 		this.life = life;
 		this.spread = Math.max(1, Math.min(spread, size));
+		this.stepPeriod = Math.max(1, stepPeriod);
+		this.paintable = paintable;
 		this.stops = new Color[stops.length];
 		for (int i = 0; i < stops.length; i++)
 			this.stops[i] = Color.web(stops[i]);
@@ -149,6 +209,24 @@ class Material {
 			if (material.glyph == glyph)
 				return material;
 		return null;
+	}
+
+	/**
+	 * Whether the material of a palette value has its turn in this step.
+	 * <p>
+	 * The renderer counts steps of the world and every material divides that
+	 * count by its clock: a period of one means a step in every step, a period
+	 * of six means one step in six. The step a particle does not get is not a
+	 * pause: the cell is copied to the next generation as it is, so the particle
+	 * keeps its place, its colour and its life until its clock strikes again.
+	 * </p>
+	 *
+	 * @param value the palette value of a particle
+	 * @param step  the step of the world, counted from the start
+	 * @return true when the particle of that value has to be stepped now
+	 */
+	static boolean isDue(int value, int step) {
+		return step % stepPeriodOf[value] == 0;
 	}
 
 	/**

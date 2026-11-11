@@ -6,12 +6,23 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 /**
- * Renderer for the falling sand particle simulation.
+ * World, clock and picture of the materials simulator.
  * <p>
- * This class handles the visualization of the particle simulation, including
- * rendering particles to the screen, managing the color palette, and processing
- * user interactions. It uses a block-based rendering approach where each cell
- * in the simulation is rendered as a PIXEL_SIZE x PIXEL_SIZE pixel block.
+ * This class handles the simulation and its visualization, including stepping
+ * the particles, rendering them to the screen, managing the color palette, and
+ * processing user interactions. It uses a block-based rendering approach where
+ * each cell in the simulation is rendered as a PIXEL_SIZE x PIXEL_SIZE pixel
+ * block.
+ * </p>
+ * <p>
+ * The renderer keeps two clocks. The frame counter counts pictures, and the hit
+ * and the drawing divide it. The step counter counts turns of the world, and
+ * every material divides that one: each material carries its own period, so a
+ * drop of water is stepped in every step and a grain of sand in one out of
+ * twelve. The world takes {@link #ENGINE_MULTIPLIER} steps per frame, which is
+ * how fast the whole world runs, while the period is how slow one material is
+ * next to the others. The picture is drawn once every {@link #FRAMES_PER_PAINT}
+ * frames, which is all the eye needs and saves the rest of the redraws.
  * </p>
  * <p>
  * The renderer maintains two buffers for double buffering - one for the current
@@ -19,14 +30,15 @@ import java.util.Arrays;
  * for rendering different particle types.
  * </p>
  * 
- * @see Sand
- * @see Transition
+ * @see MaterialSimulator
+ * @see MaterialRules
  */
-class Renderer {
+class WorldRenderer {
 	private static final int PALETTE_SIZE = Material.PALETTE_SIZE;
 	private static final int PIXEL_SIZE = 8; // block of PIXEL_SIZE x PIXEL_SIZE pixels per cell
 	private static final int BYTES_PER_PIXEL = 4; // BGRA
-	private static final int DROP_EVERY_FRAMES = 2; // drop particles only every other frame (30 times/s)
+	private static final int ENGINE_MULTIPLIER = 4; // steps of the world per frame
+	private static final int FRAMES_PER_PAINT = 1; // frames between two drawn pictures
 	private static final int BRUSH_RADIUS = 2; // cells painted around the mouse while SPACE is held
 	private static final int HIT_FRAMES = 10; // frames a hit force stays active
 	private static final WritablePixelFormat<ByteBuffer> PIXEL_FORMAT = PixelFormat.getByteBgraInstance();
@@ -38,18 +50,19 @@ class Renderer {
 	private final int rows;
 	private final WritableImage frameImage;
 	private final PixelWriter pixelWriter;
-	private final Transition transition;
+	private final MaterialRules rules;
 	private final byte[] frameBuffer; // BGRA pixels of the whole canvas
 	private int[][] cells; // generation buffer
 	private int[][] nextCells; // next generation buffer
 	private int mouseX = 0;
 	private int mouseY = 0;
 	private boolean mouseInside = false;
-	private int frameCounter = 0;
+	private int frameCounter = 0; // frames drawn: the clock of the hit and of the picture
+	private int stepCounter = 0; // steps of the world: the clock every material divides
 	private final Palette palette = new Palette();
 	private Material selected = Material.LIST[0];
-	private int hitDirection = 0; // 0 = no hit, otherwise Transition.LEFT or Transition.RIGHT
-	private int hitForce = 0; // strength of the hit (1 to Transition.MAX_HIT_FORCE)
+	private int hitDirection = 0; // 0 = no hit, otherwise MaterialRules.LEFT or MaterialRules.RIGHT
+	private int hitForce = 0; // strength of the hit (1 to MaterialRules.MAX_HIT_FORCE)
 	private int hitCount = 0;
 	private boolean spacePressed = false;
 
@@ -109,7 +122,7 @@ class Renderer {
 	 * @param h  canvas height in pixels
 	 * @throws IllegalArgumentException if gc is null or dimensions are invalid
 	 */
-	public Renderer(GraphicsContext gc, int w, int h) {
+	public WorldRenderer(GraphicsContext gc, int w, int h) {
 		if (gc == null) {
 			throw new IllegalArgumentException("GraphicsContext cannot be null");
 		}
@@ -129,7 +142,7 @@ class Renderer {
 		frameBuffer = new byte[widthPx * heightPx * BYTES_PER_PIXEL];
 		cells = new int[rows][cols];
 		nextCells = new int[rows][cols];
-		transition = new Transition(cols, rows);
+		rules = new MaterialRules(cols, rows);
 
 		initialize();
 	}
@@ -147,41 +160,108 @@ class Renderer {
 	}
 
 	/**
-	 * Advances the simulation by one frame (called at 60 FPS): adds particles
-	 * under the mouse, runs one simulation step and redraws the canvas.
+	 * Advances the world by one frame (called at 60 FPS): steps the simulation
+	 * {@link #ENGINE_MULTIPLIER} times and draws the picture when the paint clock
+	 * marks it.
+	 * <p>
+	 * One call is one frame for the hit and for the picture, and
+	 * {@link #ENGINE_MULTIPLIER} steps for the world and the brush. Raising the
+	 * multiplier speeds everything up at once without touching a single rule:
+	 * what changes from one material to another is how many steps it waits for
+	 * its turn, and what changes from the world to the picture is that the
+	 * picture is only redrawn one frame in {@link #FRAMES_PER_PAINT}.
+	 * </p>
 	 */
 	public void tick() {
-		// Drop a particle under the mouse only every DROP_EVERY_FRAMES frames
-		if (mouseInside && frameCounter % DROP_EVERY_FRAMES == 0) {
-			int cellX = mouseX / PIXEL_SIZE;
-			int cellY = mouseY / PIXEL_SIZE;
-			if (spacePressed) {
-				for (int dy = -BRUSH_RADIUS; dy <= BRUSH_RADIUS; dy++) {
-					for (int dx = -BRUSH_RADIUS; dx <= BRUSH_RADIUS; dx++) {
-						int cx = cellX + dx;
-						int cy = cellY + dy;
-						if (cx >= 0 && cx < cols && cy >= 0 && cy < rows && cells[cy][cx] == 0) {
-							cells[cy][cx] = selected.spawn();
-						}
-					}
-				}
-			} else {
-				if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows && cells[cellY][cellX] == 0) {
-					cells[cellY][cellX] = selected.spawn();
-				}
-			}
+		if (hitForce > 0)
+			applyHitForce();
+		for (int step = 0; step < ENGINE_MULTIPLIER; step++)
+			stepSimulation();
+		if (frameCounter % FRAMES_PER_PAINT == 0) {
+			renderFrame();
+			gc.drawImage(frameImage, 0, 0);
 		}
 		frameCounter++;
-		stepSimulation();
-		gc.drawImage(frameImage, 0, 0);
 	}
 
 	/**
-	 * Performs one step of the simulation.
+	 * Puts a particle of the selected material in the cell of the mouse, or in
+	 * a square around it while SPACE is held.
+	 * <p>
+	 * The brush is part of the step, not of the picture: it runs inside
+	 * {@link #stepSimulation()} and drips one particle every two turns of the
+	 * selected material, so a material that moves one step in twelve is painted
+	 * one step in twenty-four.
+	 * </p>
+	 * <p>
+	 * Two turns and not one is what leaves the grain room to fall: painted on
+	 * every turn, a grain is born on the cell the one before has just left, sees
+	 * it taken by the previous generation, and slides sideways in the air. With
+	 * a turn of its own in between it is always born over free space and the jet
+	 * falls as a column.
+	 * </p>
+	 */
+	private void dropUnderMouse() {
+		if (!mouseInside)
+			return;
+		if (stepCounter % (selected.stepPeriod * 2) != 0)
+			return;
+		int cellX = mouseX / PIXEL_SIZE;
+		int cellY = mouseY / PIXEL_SIZE;
+		if (spacePressed) {
+			for (int dy = -BRUSH_RADIUS; dy <= BRUSH_RADIUS; dy++)
+				for (int dx = -BRUSH_RADIUS; dx <= BRUSH_RADIUS; dx++)
+					drop(cellX + dx, cellY + dy);
+		} else {
+			drop(cellX, cellY);
+		}
+	}
+
+	/**
+	 * Puts a particle of the selected material in one cell, if the cell is
+	 * inside the grid and empty.
+	 *
+	 * @param cellX column of the cell
+	 * @param cellY row of the cell
+	 */
+	private void drop(int cellX, int cellY) {
+		if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows && cells[cellY][cellX] == 0)
+			cells[cellY][cellX] = selected.spawn();
+	}
+
+	/**
+	 * Pushes every particle in the direction of the current hit, once per
+	 * frame, and counts the frames the hit is still alive.
+	 * <p>
+	 * The hit is a gesture of the mouse, so it is measured in frames and not in
+	 * steps: a click moves the particles the same distance whatever the clock of
+	 * each material is.
+	 * </p>
+	 */
+	private void applyHitForce() {
+		pushParticles();
+		// The hit result becomes the current state; the steps come on top of it
+		advanceGeneration();
+		hitCount++;
+		if (hitCount > HIT_FRAMES) {
+			hitForce = 0;
+			hitDirection = 0;
+			hitCount = 0;
+		}
+	}
+
+	/**
+	 * Performs one step of the simulation: the brush, then the sweep.
 	 * <p>
 	 * This method updates the state of all particles in the simulation based on
-	 * the physics rules defined in the Transition class. It handles both regular
-	 * particle movement and hit forces applied by the user.
+	 * the physics rules defined in the MaterialRules class. Only the particles
+	 * whose clock marks this step are stepped; the rest are copied to the next
+	 * generation untouched, which is how the water moves in every step and the
+	 * sand in one out of twelve.
+	 * </p>
+	 * <p>
+	 * The brush goes first so that the particle it drops belongs to this
+	 * generation and falls in the same step it is born, like any other.
 	 * </p>
 	 * <p>
 	 * When it returns, {@code cells} holds the new generation and {@code nextCells}
@@ -189,39 +269,48 @@ class Renderer {
 	 * </p>
 	 */
 	private void stepSimulation() {
-		if (hitForce > 0) {
-			pushParticles();
-			// The hit result becomes the current state; gravity is applied on top of it
-			advanceGeneration();
-		}
-
-		// Gravity: empty cells cannot move anything, so they are skipped.
+		dropUnderMouse();
+		// Empty cells cannot move anything, so they are skipped.
 		// Every row is walked from side to side, and the side is swapped every
-		// generation: when two particles want the same cell the one read first
-		// keeps it, so a fixed side would always favour the same particle and a
-		// growing pile would lean towards it
+		// frame: when two particles want the same cell the one read first keeps
+		// it, so a fixed side would always favour the same particle and a
+		// growing pile would lean towards it. Per frame and not per step,
+		// because the clock of a material is counted in steps: swapped per step,
+		// a material of an even period would always land on the same side.
+		// Swapped per frame, the turns of the sand (one step in six, four steps
+		// per frame) fall in frames 0, 1, 3, 4, 6 and see both sides; an even
+		// quotient between the clock and the multiplier would not
 		boolean rightToLeft = (frameCounter & 1) == 0;
 		for (int y = 0; y < rows; y++) {
 			for (int i = 0; i < cols; i++) {
-				int x = rightToLeft ? cols - 1 - i : i;
-				if (cells[y][x] != 0) {
-					transition.stepParticle(x, y, cells, nextCells);
-				}
+				stepCell(rightToLeft ? cols - 1 - i : i, y);
 			}
 		}
 
-		// A hit only lives HIT_FRAMES frames
-		if (hitForce > 0) {
-			hitCount++;
-		}
-		if (hitCount > HIT_FRAMES) {
-			hitForce = 0;
-			hitDirection = 0;
-			hitCount = 0;
-		}
-
 		advanceGeneration();
-		renderFrame();
+		stepCounter++;
+	}
+
+	/**
+	 * Steps one particle when its clock marks this step, and copies it to the
+	 * next generation as it is when it is not its turn.
+	 * <p>
+	 * Copying it is not an extra: the pass writes into the other buffer, so a
+	 * particle left out there would disappear. Copied as it is, it keeps its
+	 * place, its colour and its life until its clock strikes again.
+	 * </p>
+	 *
+	 * @param x column of the cell
+	 * @param y row of the cell
+	 */
+	private void stepCell(int x, int y) {
+		int value = cells[y][x];
+		if (value == 0)
+			return;
+		if (Material.isDue(value, stepCounter))
+			rules.stepParticle(x, y, cells, nextCells);
+		else
+			nextCells[y][x] = value;
 	}
 
 	/**
@@ -234,12 +323,12 @@ class Renderer {
 	 * </p>
 	 */
 	private void pushParticles() {
-		boolean pushRight = hitDirection == Transition.RIGHT;
+		boolean pushRight = hitDirection == MaterialRules.RIGHT;
 		for (int i = 0; i < cols; i++) {
 			int x = pushRight ? cols - 1 - i : i;
 			for (int y = 0; y < rows; y++) {
 				if (cells[y][x] != 0) {
-					transition.pushParticle(x, y, cells, nextCells, hitForce, hitDirection);
+					rules.pushParticle(x, y, cells, nextCells, hitForce, hitDirection);
 				}
 			}
 		}
@@ -382,14 +471,14 @@ class Renderer {
 	 * This method is called when the user clicks on the canvas. It determines
 	 * the direction of the force based on which mouse button was pressed and
 	 * generates a random force strength between 1 and
-	 * {@link Transition#MAX_HIT_FORCE}.
+	 * {@link MaterialRules#MAX_HIT_FORCE}.
 	 * </p>
 	 *
 	 * @param button true if the primary (left) button was pressed, false if secondary (right)
 	 */
 	public void applyHit(boolean button) {
-		hitDirection = button ? Transition.LEFT : Transition.RIGHT;
-		hitForce = (int) (Math.random() * Transition.MAX_HIT_FORCE) + 1;
+		hitDirection = button ? MaterialRules.LEFT : MaterialRules.RIGHT;
+		hitForce = (int) (Math.random() * MaterialRules.MAX_HIT_FORCE) + 1;
 		hitCount = 0; // a new hit starts its own countdown
 	}
 }
