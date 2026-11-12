@@ -37,7 +37,7 @@ class WorldRenderer {
 	private static final int PALETTE_SIZE = Material.PALETTE_SIZE;
 	private static final int PIXEL_SIZE = 8; // block of PIXEL_SIZE x PIXEL_SIZE pixels per cell
 	private static final int BYTES_PER_PIXEL = 4; // BGRA
-	private static final int ENGINE_MULTIPLIER = 4; // steps of the world per frame
+	private static final int ENGINE_MULTIPLIER = 9; // steps of the world per frame
 	private static final int FRAMES_PER_PAINT = 1; // frames between two drawn pictures
 	private static final int BRUSH_RADIUS = 2; // cells painted around the mouse while SPACE is held
 	private static final int HIT_FRAMES = 10; // frames a hit force stays active
@@ -277,9 +277,9 @@ class WorldRenderer {
 		// growing pile would lean towards it. Per frame and not per step,
 		// because the clock of a material is counted in steps: swapped per step,
 		// a material of an even period would always land on the same side.
-		// Swapped per frame, the turns of the sand (one step in six, four steps
-		// per frame) fall in frames 0, 1, 3, 4, 6 and see both sides; an even
-		// quotient between the clock and the multiplier would not
+		// Swapped per frame, the turns of the sand (one step in twelve, nine
+		// steps per frame) fall in frames 0, 1, 2, 4, 5, 6 and see both sides; an
+		// even quotient between the clock and the multiplier would not
 		boolean rightToLeft = (frameCounter & 1) == 0;
 		for (int y = 0; y < rows; y++) {
 			for (int i = 0; i < cols; i++) {
@@ -299,11 +299,21 @@ class WorldRenderer {
 	 * particle left out there would disappear. Copied as it is, it keeps its
 	 * place, its colour and its life until its clock strikes again.
 	 * </p>
+	 * <p>
+	 * A cell that already has something in the next generation has no turn: a
+	 * particle is only ever written where there was none, so the cells the pass
+	 * has not read yet are empty in it, and whatever is there was written by a
+	 * rule that reached the cell first, either a particle falling into it or an
+	 * exchange that wrote both halves. The cell is left as it is, with its clock
+	 * or without it.
+	 * </p>
 	 *
 	 * @param x column of the cell
 	 * @param y row of the cell
 	 */
 	private void stepCell(int x, int y) {
+		if (nextCells[y][x] != 0)
+			return;
 		int value = cells[y][x];
 		if (value == 0)
 			return;

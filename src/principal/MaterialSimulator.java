@@ -93,17 +93,13 @@ public class MaterialSimulator extends Application {
 
 		// One button per material, tinted with its own colour. The keys and the
 		// buttons share the map, so pressing "F" is the same as pressing the
-		// button of the fire, and both report the change to the renderer. A
-		// material the brush cannot paint, such as the water that is holding a
-		// grain, is left out of both
+		// button of the fire, and both report the change to the renderer
 		ToggleGroup materialButtons = new ToggleGroup();
 		Map<Character, ToggleButton> buttonsByGlyph = new HashMap<>();
 		HBox toolbar = new HBox(BUTTON_SPACING, restartButton);
 		toolbar.setAlignment(Pos.CENTER_LEFT);
 		toolbar.setPadding(new Insets(4, 8, 4, 8));
 		for (Material material : Material.LIST) {
-			if (!material.paintable)
-				continue;
 			ToggleButton button = new ToggleButton(String.valueOf(material.glyph));
 			button.setUserData(material);
 			button.setToggleGroup(materialButtons);

@@ -51,6 +51,76 @@ class MaterialRules {
 	}
 
 	/**
+	 * Changes places with the particle of another cell.
+	 * <p>
+	 * The two halves are written here, from the same picture of the world: the
+	 * particle goes to the cell the rule points at, and that cell gives the
+	 * particle it holds in exchange, so neither of them sees the result of the
+	 * other. The cell that receives the particle still has its turn ahead, and
+	 * its own rule would write over what is left there; it does not take that
+	 * turn, because the pass leaves alone any cell that already has something in
+	 * the next generation (see {@link WorldRenderer}).
+	 * </p>
+	 * <p>
+	 * The particle of the other cell does not always climb into the cell this
+	 * one leaves: it does so when that cell has no way out to a side, and
+	 * otherwise it leaves through the side it has open and the cell is emptied. A
+	 * particle with room around it is squeezed out instead of pushed up, which is
+	 * what keeps the water from rising through a column of sand in the air: the
+	 * column is one cell wide, so every cell of it has a side open and the drop
+	 * leaves there instead of going up to the top.
+	 * </p>
+	 * <p>
+	 * When the cell it points at was already taken, the exchange does not happen
+	 * and the particle stays where it was, which is the same that any other rule
+	 * does when it finds its destination occupied.
+	 * </p>
+	 *
+	 * @param x         column of the particle that changes places
+	 * @param y         row of the particle that changes places
+	 * @param targetX   column of the cell it changes places with, below it
+	 * @param targetY   row of the cell it changes places with, below it
+	 * @param cells     the current cell data
+	 * @param nextCells the next cell data (to be updated)
+	 */
+	private void exchange(int x, int y, int targetX, int targetY, int[][] cells, int[][] nextCells) {
+		int particle = cells[y][x];
+		if (!isFree(targetX, targetY, nextCells)) {
+			// Somebody arrived at that cell first: the particle is kept where it
+			// was, so nothing is lost
+			nextCells[y][x] = particle;
+			return;
+		}
+		nextCells[targetY][targetX] = particle;
+		int other = cells[targetY][targetX];
+		int escape = freeSide(x, y, cells, nextCells);
+		if (escape < 0)
+			nextCells[y][x] = other;
+		else
+			nextCells[y][escape] = other;
+	}
+
+	/**
+	 * Side of a cell that is empty in this generation and still empty in the next
+	 * one, so that the particle an exchange displaces has somewhere to leave by.
+	 *
+	 * @param x         column of the cell
+	 * @param y         row of the cell
+	 * @param cells     the current cell data
+	 * @param nextCells the next cell data
+	 * @return the column of a free side, or -1 when both sides are taken
+	 */
+	private int freeSide(int x, int y, int[][] cells, int[][] nextCells) {
+		boolean left = x > 0 && cells[y][x - 1] == 0 && nextCells[y][x - 1] == 0;
+		boolean right = x < cols - 1 && cells[y][x + 1] == 0 && nextCells[y][x + 1] == 0;
+		if (left && right)
+			return Math.random() < 0.5 ? x - 1 : x + 1;
+		if (left)
+			return x - 1;
+		return right ? x + 1 : -1;
+	}
+
+	/**
 	 * Pushes one particle a single cell in the direction of a hit.
 	 * <p>
 	 * The probability that a particle is affected by the hit is proportional to
@@ -129,8 +199,8 @@ class MaterialRules {
 	 *   <li>{@link Pattern#SHARED}: the particle is written in one of these cells,
 	 *       each one with one chance in as many as there are, so of two free
 	 *       diagonals each one is used half of the time. Only one of them receives
-	 *       the particle and the rest stay empty; when none of them wins the dice
-	 *       the particle still goes to the last one</li>
+	 *       the particle and the rest stay empty: one die is thrown for the whole
+	 *       rule and it is the cell it points at that takes it</li>
 	 *   <li>{@link Pattern#REPEATED}: the particle is copied in each of these
 	 *       cells with one chance in as many as there are, and each one rolls its
 	 *       own dice, so several of them can win: this is how a material is
@@ -140,6 +210,12 @@ class MaterialRules {
 	 *       one step older, one step older without wrapping, half of the life it
 	 *       has left older, or half of the life it has spent younger</li>
 	 *   <li>a material glyph: a new particle of that material is created there</li>
+	 *   <li>{@link Pattern#SWAPS}: the particle and the one in this cell change
+	 *       places, both written here at once; the one in this cell only goes up
+	 *       when it has no way out to a side (see {@link #exchange})</li>
+	 *   <li>{@link Pattern#SHARED_SWAPS}: like {@code SWAPS}, with the cells of
+	 *       this glyph sharing the exchange, one chance in as many as there are
+	 *       each</li>
 	 *   <li>{@link Material#ANY}: nothing is written</li>
 	 * </ul>
 	 * The {@code ?} cells need no copy: a neighbour holding a particle is a
@@ -172,9 +248,19 @@ class MaterialRules {
 		int destinationValue = particle;
 		boolean originWritten = false;
 
-		int lastSharedX = -1; // last "x" of the result, the one that catches a miss
-		int lastSharedY = -1;
-		boolean hit = false;
+		// The cells that share something throw one die for the whole rule, and it
+		// is thrown before they are read: thrown one by one, the first would win
+		// one in as many, the second one in that same share of what is left, and
+		// the last would take the rest. With two faces that still comes out half
+		// and half, and with more it loads the last cell. A cell the pass skips
+		// because the grid ends there is not one of the faces, so a rule has to
+		// keep its sharing cells inside
+		int sharedPick = step.shared > 0 ? (int) (Math.random() * step.shared) : -1;
+		int sharedSeen = 0;
+		int swapPick = step.swapShares > 0 ? (int) (Math.random() * step.swapShares) : -1;
+		int swapSeen = 0;
+		int swapX = -1; // cell the exchange points at, if the rule has one
+		int swapY = -1;
 
 		for (int py = 0; py < result.length; py++) {
 			for (int px = 0; px < result[py].length(); px++) {
@@ -198,16 +284,11 @@ class MaterialRules {
 					destinationValue = particle;
 					break;
 				case Pattern.SHARED:
-					lastSharedX = tx;
-					lastSharedY = ty;
-					// Die with one face per "x": 0 wins. Once one wins the others are
-					// not rolled any more
-					if (!hit && (int) (Math.random() * step.shared) == 0) {
+					if (sharedSeen++ == sharedPick) {
 						claimed = true;
 						destinationX = tx;
 						destinationY = ty;
 						destinationValue = particle;
-						hit = true;
 					}
 					break;
 				case Pattern.REPEATED:
@@ -232,6 +313,22 @@ class MaterialRules {
 					destinationY = ty;
 					destinationValue = Material.advanceClamped(particle);
 					break;
+				case Pattern.BORN:
+					claimed = true;
+					destinationX = tx;
+					destinationY = ty;
+					destinationValue = Material.reborn(particle);
+					break;
+				case Pattern.SWAPS:
+					swapX = tx;
+					swapY = ty;
+					break;
+				case Pattern.SHARED_SWAPS:
+					if (swapSeen++ == swapPick) {
+						swapX = tx;
+						swapY = ty;
+					}
+					break;
 				case Pattern.BURNS:
 					claimed = true;
 					destinationX = tx;
@@ -255,15 +352,11 @@ class MaterialRules {
 			}
 		}
 
-		// Every "x" missed the dice: the last one takes the particle anyway
-		if (!hit && lastSharedX >= 0) {
-			claimed = true;
-			destinationX = lastSharedX;
-			destinationY = lastSharedY;
-			destinationValue = particle;
-		}
-
-		if (claimed) {
+		if (swapX >= 0) {
+			// A swap writes both halves, so the particle is not kept in its own
+			// cell first: the exchange takes its place
+			exchange(x, y, swapX, swapY, cells, nextCells);
+		} else if (claimed) {
 			// The particle is written after the cells are emptied, and when another
 			// particle took the destination this frame it stays where it was, so
 			// none of them is lost
@@ -418,6 +511,8 @@ class MaterialRules {
 		final int shared;
 		/** Number of {@code o} of the result: each one rolls its own dice. */
 		final int copies;
+		/** Number of {@code p} of the result: they share the exchange. */
+		final int swapShares;
 
 		Step(String[] match, String[] result) {
 			if (result.length != match.length)
@@ -431,14 +526,24 @@ class MaterialRules {
 			this.anchorY = match.length / 2;
 			this.shared = count(result, Pattern.SHARED);
 			this.copies = count(result, Pattern.REPEATED);
+			this.swapShares = count(result, Pattern.SHARED_SWAPS);
+			if (count(result, Pattern.SWAPS) > 1)
+				throw new IllegalArgumentException("A result can only exchange places with one cell");
+			// A swap writes the cell it points at, and the pass only leaves alone
+			// the cells it has not read yet: that is why a swap can only look down
+			for (int row = 0; row < result.length; row++)
+				for (int px = 0; px < result[row].length(); px++)
+					if (row <= anchorY
+							&& (result[row].charAt(px) == Pattern.SWAPS || result[row].charAt(px) == Pattern.SHARED_SWAPS))
+						throw new IllegalArgumentException("A swap can only point at a row below the particle");
 		}
 
 		/**
 		 * Number of cells of a result drawn with one glyph.
 		 * <p>
-		 * It is both the faces of the die rolled for each one and what makes their
-		 * chances add up to one. It only depends on the rule, so it is counted once
-		 * here instead of on every step of every particle.
+		 * It is both the faces of the die thrown for the whole rule and what makes
+		 * their chances add up to one. It only depends on the rule, so it is
+		 * counted once here instead of on every step of every particle.
 		 * </p>
 		 *
 		 * @param result the result of the rule
@@ -474,7 +579,11 @@ class MaterialRules {
 	 *   <li>{@link #REPEATED}: the particle, once per {@code o} cell that wins its
 	 *       own dice</li>
 	 *   <li>{@link #WRAPS}, {@link #CLAMPS}, {@link #BURNS}, {@link #FEEDS}: the
-	 *       particle after walking its life</li>
+	 *       particle after walking its life, and {@link #BORN}: the particle
+	 *       drawn again among the values a new one could take</li>
+	 *   <li>{@link #SWAPS} and {@link #SHARED_SWAPS}: the particle and the one in
+	 *       that cell change places, both written at once; the one in that cell
+	 *       only goes up when it has no free side to leave by</li>
 	 *   <li>a material glyph: a new particle of that material</li>
 	 * </ul>
 	 * The centre of a drawing is its middle character, so in a match it is the
@@ -490,6 +599,12 @@ class MaterialRules {
 		private static final char WRAPS = 'V';
 		/** One step towards the end of the band, staying there when it ends. */
 		private static final char CLAMPS = 'W';
+		/** The particle again, with one of the values a new one could take. */
+		private static final char BORN = 'B';
+		/** The particle and the one in this cell change places. */
+		private static final char SWAPS = 'P';
+		/** Like {@code P}, with the cells sharing the exchange between them. */
+		private static final char SHARED_SWAPS = 'p';
 		/** Half of the life that is left. */
 		private static final char BURNS = 'r';
 		/** Half of the life already spent. */
@@ -758,38 +873,20 @@ class MaterialRules {
 				new String[] { "?W?" });
 
 		/**
-		 * Water with a grain of sand on top of it stops being a drop for a while: it
-		 * becomes the water that is holding the grain, a state with a band of its
-		 * own that counts turns instead of a life.
+		 * Water with a grain of sand on top of it waits: it walks towards the end
+		 * of its band one step per turn, and that walk is the wait of the grain.
 		 * <p>
-		 * Nothing is moved and nothing is consumed here. The same drop keeps its
-		 * cell and turns into the mark, so the water of the world is the same; the
-		 * grain rests on it as it rests on any particle, and the swap comes later.
+		 * Nothing is moved here. The drop keeps its cell and only changes shade,
+		 * and its band is laid out so that the shade barely changes while it
+		 * waits, so the pool does not darken where a grain is resting. What
+		 * bounds the wait is the size of the band and the clock of the water, not
+		 * the rule.
 		 * </p>
 		 */
-		private static final Step WATER_IS_HELD_STEP = new Step(
+		private static final Step WATER_WAITS_UNDER_SAND_STEP = new Step(
 				new String[] {
 						"?S?",
 						"?A?",
-						"???" },
-				new String[] {
-						"???",
-						"?N?",
-						"???" });
-
-		/**
-		 * The mark ages while the grain is still on top of it: one step towards the
-		 * last value of its band per turn, and that walk is the wait of the grain.
-		 * <p>
-		 * The walk cannot go past the last value, so a grain that stays put for ever
-		 * would keep the drop marked at its darkest; what bounds the wait is the
-		 * size of the band, not the rule.
-		 * </p>
-		 */
-		private static final Step HELD_AGES_STEP = new Step(
-				new String[] {
-						"?S?",
-						"?N?",
 						"???" },
 				new String[] {
 						"???",
@@ -797,54 +894,65 @@ class MaterialRules {
 						"???" });
 
 		/**
-		 * Sand on top of a mark that has waited long enough sinks into it: it empties
-		 * its own cell and claims the one below, which is where the drop was.
+		 * A grain over water that has waited long enough changes place with one of
+		 * the three drops under it, drawn at random: straight down, down-left or
+		 * down-right.
 		 * <p>
-		 * The two rules of the swap are written the way round that keeps both
-		 * particles. This one empties the cell of the grain, so the water can climb
-		 * into it, and the one of the water writes nothing in its own cell, so the
-		 * grain that has just landed there is not wiped out. It works because the
-		 * rows are walked from the top: the grain is always stepped first, and the
-		 * cell it leaves is empty when the water asks for it.
+		 * The wait is still the drop directly below, the one that has been walking
+		 * its band under the grain, so a row still costs one wait. What changes is
+		 * where the grain lands: the three destinations are offered to the same
+		 * die, each one with one chance in three, and the drop that wins takes the
+		 * cell the grain leaves, or a free side of it when it has one, so the pool
+		 * keeps its variety, because the drop that moves keeps the shade it had.
+		 * </p>
+		 * <p>
+		 * The exchange is written with {@code p} and not with a destination glyph
+		 * of its own: neither side can be written by a glyph of the rule, because
+		 * the exchange writes both. The {@code ?} of the middle is the cell the
+		 * grain leaves, which the exchange takes care of.
 		 * </p>
 		 */
-		private static final Step SAND_SINKS_STEP = new Step(
+		private static final Step SAND_SINKS_SIDEWAYS_INTO_WATER_STEP = new Step(
 				new String[] {
 						"???",
 						"?S?",
-						"?n?" },
+						"AaA" },
 				new String[] {
 						"???",
-						"?_?",
-						"?X?" });
+						"???",
+						"ppp" });
 
 		/**
-		 * The mark of a drop that has waited long enough climbs into the cell the
-		 * grain has just left, and it climbs as a mark of the first value: {@code V}
-		 * sends it back to the start of its band, so the next grain that lands on it
-		 * waits exactly as long.
+		 * The same exchange when the two diagonals are not water, at the wall of
+		 * the pool or on a pile: the grain goes straight down without choosing.
 		 * <p>
-		 * Without that the wait would be paid only once: from the second grain on the
-		 * mark would be at its last value, every grain would sink in a single step
-		 * and the column would fall as fast as in the air.
+		 * Without this rule a grain held by a drop that had finished its wait
+		 * would stay there for ever, because the three-way rule needs water at
+		 * both diagonals and the wait of the drop would never be paid.
 		 * </p>
 		 */
-		private static final Step HELD_RISES_STEP = new Step(
+		private static final Step SAND_SINKS_STRAIGHT_INTO_WATER_STEP = new Step(
 				new String[] {
-						"?S?",
-						"?n?",
-						"???" },
-				new String[] {
-						"?V?",
 						"???",
-						"???" });
+						"?S?",
+						"?a?" },
+				new String[] {
+						"???",
+						"???",
+						"?P?" });
 
 		/**
-		 * A mark with no grain on top of it is a drop again: the sand slid away, so
-		 * there is nothing left to swap with.
+		 * A drop that reached the end of its band and no longer has a grain on top
+		 * of it starts again: the sand slid away, so there is nothing left to
+		 * swap with, and the drop would keep the flat shade of the wait for ever.
+		 * <p>
+		 * Written as a new particle for the same reason as any other birth: it
+		 * comes back with one of the shades a drop is born with, so the pool keeps
+		 * the variety it has and does not lighten where a grain passed.
+		 * </p>
 		 */
-		private static final Step HELD_RELEASES_STEP = new Step(
-				new String[] { "?N?" },
+		private static final Step WATER_FORGETS_THE_WAIT_STEP = new Step(
+				new String[] { "?a?" },
 				new String[] { "?A?" });
 
 		/** Free fall: the space below the particle is empty, so it drops one row. */
@@ -1011,13 +1119,16 @@ class MaterialRules {
 		 * the diagonals first the water piles up in the same cone as the sand.
 		 * </p>
 		 * <p>
-		 * The rules of the drop that is holding a grain go together and before the
-		 * free fall: the mark is a state of the water and not a material of its
-		 * own, so the water of a pond is still water, and what moves in the swap
-		 * is the grain going down, not the drop going up. The one that climbs
-		 * goes before the one that ages: the ageing rule matches the whole band,
-		 * the last value included, so after it the mark of a drop that has waited
-		 * would never rise.
+		 * The rules of the slow sink go together and before the free fall: a grain
+		 * is not held by a mark of its own but by the drop it rests on, which is
+		 * still water, and the band of that drop is the wait. The order between
+		 * them matters. The wait goes before the forget, because the forget
+		 * matches any drop at the end of its band and would start again the one
+		 * that still has a grain on top. And the exchange goes last of the group
+		 * and comes in two forms: the grain changes place with one of the three
+		 * drops under it, and when the diagonals are not water it changes place
+		 * with the one below, so a grain is never held for ever by a drop that has
+		 * already finished its wait.
 		 * </p>
 		 */
 		private static final Step[] STEPS = {
@@ -1045,11 +1156,10 @@ class MaterialRules {
 				WATER_PUTS_OUT_ABOVE_STEP,
 				WATER_PUTS_OUT_UPPER_LEFT_STEP,
 				WATER_PUTS_OUT_UPPER_RIGHT_STEP,
-				WATER_IS_HELD_STEP,
-				HELD_RISES_STEP,
-				HELD_AGES_STEP,
-				SAND_SINKS_STEP,
-				HELD_RELEASES_STEP,
+				WATER_WAITS_UNDER_SAND_STEP,
+				WATER_FORGETS_THE_WAIT_STEP,
+				SAND_SINKS_SIDEWAYS_INTO_WATER_STEP,
+				SAND_SINKS_STRAIGHT_INTO_WATER_STEP,
 				FREE_FALL_STEP,
 				WATER_FLOWS_BOTH_STEP,
 				WATER_FLOWS_LEFT_STEP,

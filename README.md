@@ -11,7 +11,7 @@ its own main class:
 
 | Package | Main class | What it is |
 |---|---|---|
-| `src/principal` | `principal.MaterialSimulator` | The materials simulator: five paint-able materials plus the mark of the water that holds a grain, a clock per material, hit forces |
+| `src/principal` | `principal.MaterialSimulator` | The materials simulator: five materials, a clock per material, hit forces |
 | `src/sand` | `sand.Sand` | The original falling sand, recovered from commit `a2679ca` and left as it was |
 
 The design of the engine (materials, glyphs, rules and the reason behind each one)
@@ -89,7 +89,7 @@ java --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics -cp
 2. **[WorldRenderer.java](src/principal/WorldRenderer.java)** - Rendering and simulation engine
    - Manages pixel data and palette
    - Handles particle generation at mouse position, at half the clock of the selected material
-   - Steps the world `ENGINE_MULTIPLIER` times per frame (four times today) and draws the picture on every frame
+   - Steps the world `ENGINE_MULTIPLIER` times per frame (nine times today) and draws the picture on every frame
    - Updates particle states using the rules table, only for the particles whose clock marks the step
    - Renders the simulation to screen using block-based rendering
    - Processes hit forces applied to particles
@@ -107,7 +107,7 @@ java --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics -cp
    - Lays out the bands from value 1 in the order of the list
    - Holds the value to glyph table the rules ask for
    - Holds the clock of each material: how many steps of the world pass between two steps
-   - Walks the band for the life glyphs (`V`, `W`, `r`, `l`)
+   - Walks the band for the life glyphs (`V`, `W`, `r`, `l`) and draws a value again (`B`)
 
 5. **[Sand.java](src/sand/Sand.java)** - The original engine, in its own package
    - The falling sand simulator as it was in commit `a2679ca`: one class for the
@@ -136,12 +136,13 @@ are written with the same glyphs:
 | `?` | any neighbour | nothing is written |
 | `X` | a particle (the borders count as particles) | the particle is written there, with its value |
 | `_` | free space | the cell is emptied |
-| `S` `A` `M` `F` `H` `N` | a value of that material | a new particle of that material |
-| `s` `a` `m` `f` `h` `n` | the last value of that material: it has spent its life (for the mark `n`, it has waited long enough) | not used |
+| `S` `A` `M` `F` `H` | a value of that material | a new particle of that material |
+| `s` `a` `m` `f` `h` | the last value of that material: it has spent its life (for the water, it has waited long enough) | not used |
 | `x` | same as `X` | one of these cells keeps the particle, drawn by chance |
 | `o` | same as `X` | each of these cells rolls its own dice, so several can win: the winners are new particles that share the life the original has left, and nothing is born when there is nothing left to share |
 | `V` | same as `X` | the particle one value older, wrapping back at the end |
 | `W` | same as `X` | the particle one value older, staying at the last one |
+| `B` | same as `X` | the particle with a value drawn again among the first ones of its band, like a new particle |
 | `r` | same as `X` | the particle with half of the life it has left |
 | `l` | same as `X` | the particle with half of the life it has spent |
 
@@ -163,31 +164,35 @@ from value 1 in the order of `Material.LIST`, and value 0 is empty space.
 
 | Glyph | Material | Values | Life | Born in | Clock | Colours |
 |-------|----------|--------|------|---------|-------|---------|
-| `S` | sand | 1-25 | no | 1-25 | 6 | pale yellow to golden ochre |
-| `A` | water | 26-45 | no | 26-45 | 1 | light blue to deep blue |
-| `M` | wood | 46-75 | yes | 46-54 | 3 | light wood to dark wood |
-| `F` | fire | 76-105 | yes | 76-81 | 3 | pale yellow to orange to red |
-| `H` | smoke | 106-185 | yes | 106-111 | 3 | dark grey to light grey |
-| `N` | water holding a grain | 186-191 | no, the band is the wait | 186 | 6 | water blue, a shade darker |
+| `S` | sand | 1-25 | no | 1-25 | 12 | pale yellow to golden ochre |
+| `A` | water | 26-82 | no (the tail of the band is the wait) | 26-33 | 1 | mid blue to light blue, and the wait flat |
+| `M` | wood | 83-112 | yes | 83-91 | 9 | light wood to dark wood |
+| `F` | fire | 113-142 | yes | 113-118 | 9 | pale yellow to orange to red |
+| `H` | smoke | 143-222 | yes | 143-148 | 9 | dark grey to light grey |
 
 Every material is created at a random value among the first ones of its band
 (`spread` in `Material.LIST`), so a pile is not a flat sheet of a single colour.
-Sand and water spread over the whole band; the materials with life only over the
-first few values, because there the value is the age and the rest is life spent
-at birth. A material with life then walks towards the last value: that is what
-`V` and `W` do, and the size of the band is how long it lasts. Since climbing
-costs one value per row and the canvas is 75 rows tall, the width of each band is
-a distance on the screen: the fire gets 30 values, a third of the height, and the
-smoke gets 80 so that it really does reach the ceiling.
+The materials with life spread only over the first few values, because there the
+value is the age and the rest is life spent at birth. A material with life then
+walks towards the last value: that is what `V` and `W` do, and the size of the band
+is how long it lasts. Since climbing costs one value per row and the canvas is 75
+rows tall, the width of each band is a distance on the screen: the fire gets 30
+values, a third of the height, and the smoke gets 80 so that it really does reach
+the ceiling.
 The last value of a material with life is painted almost white, so a particle
 that has spent its life is practically invisible while it waits for the rule
 that transforms it.
 
-`N` is the exception: it is not a material of the catalogue but a **state** of a
-drop, the one that is holding a grain of sand and waiting to swap places with it.
-Its band counts turns and not a life, it is not painted by the brush (so it has
-no button and no key) and, having no life, it is never tinted white: the wait
-would blink once per grain.
+The water is the one band with two jobs. Its first eight values are the shades a
+drop is born with; from there to the end the band is the **wait** of a grain of
+sand resting on it, walked one value per turn by `W`, and the grain sinks when the
+drop reaches the last value. The stops of that stretch are the same colour, so a
+drop that is waiting does not change the colour of the pond, and as the band has no
+life it is never tinted white: the wait would blink once per grain. The width is
+measured as well: a drop born anywhere in the first eight values needs between 49
+and 56 steps to reach the end, which is more than four turns of the grain (48) and
+less than five (60), so every grain sinks on its fifth turn and a row always costs
+60 steps of the world, 6.7 frames at the current multiplier.
 
 ### Clocks
 
@@ -197,19 +202,18 @@ the world: the materials and the brush divide it. `ENGINE_MULTIPLIER` is how man
 steps the world takes per frame, and it is the knob that makes everything faster
 or slower at once, without touching a single rule:
 
-- the **water** has a clock of 1, so it steps on every step (240 a second);
-- the **sand** has a clock of 6, so it steps one step in six (40 a second): it
-  falls and spreads at a sixth of the speed of the liquid;
-- the **wood**, the **fire**, the **smoke** and the **mark** that holds a grain
-  have a clock of 3 or 6, and the ones with life keep the pace of their lives,
-  which are counted in steps: they are stepped 80 times a second, and each turn
-  is one row they climb or one step older.
+- the **water** has a clock of 1, so it steps on every step (540 a second);
+- the **sand** has a clock of 12, so it steps one step in twelve (45 a second): it
+  falls and spreads at a twelfth of the speed of the liquid;
+- the **wood**, the **fire** and the **smoke** have a clock of 9, and the ones with
+  life keep the pace of their lives, which are counted in steps: they are stepped
+  60 times a second, once per frame, and each turn is one row they climb or one
+  step older.
 
-With the multiplier at 4 the world takes four steps per frame: the water falls
-four cells per frame and the sand one cell every frame and a half. The mark of a
-drop that holds a grain is stepped one step in six, so the grain waits nine
-frames for every row it sinks, which is the slow fall this whole group of rules
-is about.
+With the multiplier at 9 the world takes nine steps per frame: the water falls
+nine cells per frame and the sand one cell every frame and a third. A grain waits
+six frames and two thirds for every row it sinks, against a frame and a third in
+the air, which is the slow fall this whole group of rules is about.
 
 The step a particle does not get is not a pause: it is copied to the next
 generation untouched, so it keeps its place, its colour and its life. That is
@@ -218,28 +222,38 @@ grain at all.
 
 The clock and the painting are separate, and both fit easily. `WorldRenderer.tick()`
 runs sixty times a second and paints on every frame (`FRAMES_PER_PAINT = 1`);
-measured on the default canvas, filling the whole buffer costs 0.95 ms and the
-four steps of the world 0.45 ms, out of the 16.6 ms a frame has at 60 FPS.
+measured on the default canvas, filling the whole buffer costs 0.95 ms and each
+step of the world 0.11 ms (0.9 ms for the eight of a frame, measured with the
+multiplier at 8), out of the 16.6 ms a frame has at 60 FPS.
 
 The brush follows the same clock, at half speed. It runs inside the step and
 drips one particle every two turns of the selected material, so the sand drips
-one grain every twenty-four steps and the water one every two. The turn in
+one grain every twenty-four steps (every two frames and two thirds) and the water
+one every two (four and a half per frame). The turn in
 between is what leaves the grain room to fall: painted on every turn, a grain is
 born on the cell the one before has just left, the previous generation still
 shows it there, so it slides sideways in the air and the jet opens into a cone.
 With the gap the jet is one cell wide instead of three.
 
 The sweep swaps sides **on every frame, not on every step**, so what matters is in
-which frames the turns of a material land: a grain is due one step in six and a
-frame has four, so its turns fall in frames 0, 1, 3, 4, 6 and so on, and they see
-both directions. Were the turns always on the same side, every one of them would
-read its rows in the same direction and push its pile sideways: alternating per
-step, or with an even quotient between clock and multiplier, a block of sand ends
-up 5.4 cells to one side and visibly flatter (13 rows instead of 17 and 42 columns
-instead of 37). With the clocks of today a pile of 200 grains dropped on a pond
-stays 0.06 cells from the centre. Materials faster than the frame (water with 1,
-wood, fire and smoke with 3) are stepped several times per frame and see both
-sides anyway.
+which frames the turns of a material land: a grain is due one step in twelve and a
+frame has nine, so its turns fall in frames 0, 1, 2, 4, 5, 6, 8, 9 and so on, and
+they see both directions. Were the turns always on the same side, every one of them
+would read its rows in the same direction and push its pile sideways: alternating
+per step, or with an even quotient between clock and multiplier, a block of sand
+ends up 5.4 cells to one side and visibly flatter (13 rows instead of 17 and 42
+columns instead of 37). Materials faster than the frame (the water, with 1) are
+stepped several times per frame and see both sides anyway; the ones with life,
+with 9, land on every frame and see both too.
+
+The multiplier is **odd** on purpose, and so must be the product with
+`FRAMES_PER_PAINT`. The water falls one cell per step, nine per frame, and the
+brush drops a particle every two steps, so a falling jet is a chain of drops two
+cells apart. With an even stride the chain always lands on rows of the same parity
+and every picture is congruent with the previous one: the jet looks like a dashed
+line frozen in the air (the wagon-wheel effect), with the rows of the other parity
+never occupied when the picture is taken. Odd, the chain moves one cell off its own
+lattice on every frame and the fall is seen.
 
 ### How the table is read
 
@@ -263,11 +277,10 @@ gravity that any particle obeys.
 | Smoke rises | `?_?`<br>`?H?`<br>`???` | `?W?`<br>`?_?`<br>`???` | smoke rises like fire, but it neither spreads nor creates anything |
 | Smoke ages | `?H?` | `?W?` | the smoke cannot rise: it ages where it is, so smoke trapped under the sand still fades out and disappears |
 | Water puts out | `?F?`<br>`?A?` | `?X?`<br>`?_?` | the drop jumps into the cell the flame has just left, so the water follows the fire it has put out. Only upwards: the flame above is stepped first, so its cell is already free, while below or at the side the drop would move first and the flame would write over it |
-| Water is held | `?S?`<br>`?A?`<br>`???` | `???`<br>`?N?`<br>`???` | a grain rests on the drop: it becomes the mark that counts the wait, so the grain neither sinks nor slides while the drop holds it |
-| Held rises | `?S?`<br>`?n?`<br>`???` | `?V?`<br>`???`<br>`???` | the wait is over: the mark climbs into the cell the grain has just left, and `V` sends it back to the first value, so the next grain waits exactly as long |
-| Held ages | `?S?`<br>`?N?`<br>`???` | `???`<br>`?W?`<br>`???` | the grain is still there: the mark walks one value towards the end of its band, which is the wait |
-| Sand sinks | `???`<br>`?S?`<br>`?n?` | `???`<br>`?_?`<br>`?X?` | the wait is over: the grain empties its cell and drops into the one of the mark |
-| Held releases | `?N?` | `?A?` | no grain on top: the sand slid away and the mark is a drop again |
+| Water waits | `?S?`<br>`?A?`<br>`???` | `???`<br>`?W?`<br>`???` | a grain rests on the drop: the drop walks one value towards the end of its band, and that walk is the wait. Nothing is moved and the stretch of the band is one flat colour, so the pond does not change while a grain sits on it |
+| Water forgets | `?a?` | `?A?` | no grain on top: the sand slid away, so the drop is born again with one of the shades of a new drop instead of keeping the flat shade of the wait for ever |
+| Sand sinks | `???`<br>`?S?`<br>`AaA` | `???`<br>`???`<br>`ppp` | the drop below has reached the end of its band: the grain changes places with one of the three drops under it, drawn at random, one in three each |
+| Sand sinks straight | `???`<br>`?S?`<br>`?a?` | `???`<br>`???`<br>`?P?` | the same when the two diagonals are not water, at the wall of the pool or on a pile: the grain changes places with the drop below, without choosing |
 | Water flows | `_A_`<br>`?X?` | `x_x` | both sides free and something below: the water slides to one of them and levels its surface |
 | Free fall | `???`<br>`?X?`<br>`?_?` | `???`<br>`?_?`<br>`?X?` | free space below, the particle drops one row |
 | Slide both | `???`<br>`?X?`<br>`_X_` | `???`<br>`?_?`<br>`x?x` | something below, both diagonals free: one of them, half of the time each |
@@ -279,31 +292,70 @@ The bottom row of a result is the row below the particle, so `X??` means "moved
 to the cell down-left". The rules of the water are the same drawing with only
 one free side (`_AX`, `XA_`), so a grain of water can also flow alone.
 
-The five rules of the held water are one mechanism seen from several sides, and they
-work in pairs. The swap needs two rules, one per particle, because a rule only ever
-writes its own particle: the grain cannot move the drop and the drop cannot move the
-grain. The two drawings that meet are made so that they do not erase each other:
-`Sand sinks` empties the cell of the grain, so the drop has somewhere to climb into,
-and `Held rises` writes nothing in its own cell, so the grain that has just landed
-there survives. That works because the rows are swept from the top: the grain is
-always stepped first, and the cell it leaves is empty when the drop asks for it.
-With a `_` in the middle of `Held rises`, or with the rows swept the other way, one
-of the two disappeared in every swap.
+The four rules of the slow sink are one mechanism seen from four sides. `Water
+waits` is the clock: the drop under a grain walks its band instead of moving, and
+the end of the band is the end of the wait. `Sand sinks` and `Sand sinks straight`
+are the swap, drawn with `p` and `P`, and `Water forgets` restarts a drop that was
+left at the end of its band with no grain on top.
 
-`Held rises` goes before `Held ages` even though it looks backwards: `?N?` matches
-the whole band, the last value included, so an ageing rule first would leave the
-mark of a drop that has waited stuck at the end of its band, and the grain that
-should sink on top of it would stay there for ever. The whole group goes before
-`Free fall`, next to the water, because the mark is a state of a drop: without a
-grain on top it becomes water again before it can move.
+A swap is written whole by a single rule: the grain goes to the cell of the drop
+and the drop takes the cell the grain leaves, both from the same picture of the
+world. That is what `p` and `P` draw, and it is why the rule leaves its own cell at
+`?`: the swap writes it. The cell that receives the grain still has its turn ahead,
+and its own rule would write over what is left there; it does not take that turn,
+because the sweep leaves alone any cell that already has something in the next
+generation. That works because a particle is only ever written where there was
+none: the cells the sweep has not read yet are empty in it, so whatever is there
+was put there by a rule that reached the cell first. Before, that could not be
+known, so the swap had to be noted in an array of its own, with the coordinates of
+the particle that started it, and completed when the sweep reached the other cell.
 
-Measured on a column of 200 grains over a pond of 800 drops, 900 frames: 200 grains
-and 800 drops before and after, not one mark left, no drop trapped under the pile,
-217 marks at the same time in the worst moment (a third of the pond frozen while the
-column crosses it), the level of the pond five rows higher, which is the volume of
-the grains, a single grain sinking nine frames per row against one and a half in the
-air, and the pile 0.06 cells from the centre where it was dropped. The fire does not
-recognise `N` yet: the eight rules that put a flame out ask for `A`.
+The drop that climbs keeps the shade it had, because the swap moves the value it
+already holds: the pond keeps its variety without a rule having to draw a new shade
+for it.
+
+The swap only looks down. The sweep writes from the top, so the cell below is
+always one it has not read yet; the cell above is already resolved, and the guard
+that keeps a swap from writing over a cell that was taken would cancel it; and to
+the side the direction of the row is drawn every frame, so the swap would happen in
+half of the frames and the grain would sink in fits and starts. The table checks it
+when it loads: a `P` anywhere but in the row below the particle stops the program
+at start.
+
+`Water waits` goes before `Water forgets`, which matches any drop at the end of its
+band and would start again the one that still has a grain on top. The whole group
+goes before `Free fall`, next to the water, because a drop that is waiting is still
+water: without a grain on top it is born again before it can move.
+
+Measured with the harness, nine grains over a pond of 108 drops and 6000 steps:
+60.08 steps per row (721 steps for twelve rows, 6.7 frames, against 1.3 in the
+air), nine grains in and nine out, 108 drops in and 108 out, the nine grains at
+the bottom and the pond as many rows higher as the volume of the grains. The pond
+also comes out with all eight birth shades in use, between five and twenty drops
+on each, and not one drop left in the waiting stretch, which is what `V` could not
+do: with `V` the 108 drops ended up on the first value and the water looked flat.
+The fire now sees the waiting drops too: they are water, with their `A`, so the
+eight rules that put a flame out treat them like any other, which they did not do
+when the wait was a mark of its own.
+
+A grain cannot drift sideways while it sinks, and the engine does not let it try. A
+sideways swap would put the grain and the drop in the same row, whose direction is
+drawn every frame: on the frames where the drop is read first it resolves its own
+cell, the swap finds the destination taken and cancels; on the others the swap
+writes both halves and the sweep skips the drop. The grain would sink in fits and
+starts, one frame yes and the next no. The vertical swap has no such problem: the
+two particles are in different rows and the sweep always reads them in the same
+order, the one above first.
+
+The drop does not always climb into the cell the grain leaves. Before writing it,
+the cell of the grain is asked for a free side, in this generation and in the next
+one: when it has one, the drop leaves by it and the cell of the grain stays empty;
+when it has none, the drop climbs. A grain that falls into water displaces a drop,
+and a drop with room beside it slips away instead of being pushed up. Without that
+escape the water climbed inside any one-cell column of sand up to the air: measured
+with the harness, with the surface of the pond at row 20 of a 36-row window and a
+jet of 101 grains, the highest drop reached row 1 without the escape and row 12
+with it, which is the level the pond has risen with the sand inside.
 
 Inside the generic gravity the water levelling goes before the diagonal slides:
 a liquid has no angle of repose, so a drop that has landed opens sideways and
@@ -374,7 +426,7 @@ The simulation is optimized for performance:
 - Pattern matching is optimized with early termination
 - Memory is reused where possible to reduce garbage collection
 - The speed of the world and the rate of the picture are separate knobs: the
-  world takes `ENGINE_MULTIPLIER` steps per frame (`4` today) and the picture is
+  world takes `ENGINE_MULTIPLIER` steps per frame (`9` today) and the picture is
   rebuilt every frame (`FRAMES_PER_PAINT = 1`). Measured on the default canvas,
-  the four steps cost 0.45 ms and the whole redraw 0.95 ms, out of the 16.6 ms a
-  frame has at 60 FPS
+  the redraw costs 0.95 ms and each step of the world 0.11 ms, so the nine of a
+  frame come to about 1 ms, out of the 16.6 ms a frame has at 60 FPS.

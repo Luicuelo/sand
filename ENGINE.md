@@ -54,7 +54,7 @@ comparte nada con estos cuatro archivos: es la referencia de dónde venimos.
 ## 3. Un fotograma, paso a paso
 
 `WorldRenderer.tick()` se ejecuta 60 veces por segundo, y cada llamada es **un
-fotograma**: `ENGINE_MULTIPLIER` pasos del mundo (hoy 4) y, cuando le toca por su
+fotograma**: `ENGINE_MULTIPLIER` pasos del mundo (hoy 9) y, cuando le toca por su
 cuenta, un pintado. El multiplicador se toca solo y acelera todo a la vez, porque
 está por encima de los relojes de los materiales: no cambia ninguna regla.
 
@@ -68,11 +68,14 @@ está por encima de los relojes de los materiales: no cambia ninguna regla.
      y con el reloj del material, pero al doble: suelta un grano cada dos turnos
      del material seleccionado, que son veinticuatro pasos para la arena y dos
      para el agua (ver "El reloj de cada material").
-   - **Barrido**: se recorre la rejilla fila por fila y, en cada celda no vacía,
-     se pregunta antes a su material si le toca en este paso
-     (`Material.isDue`). Si le toca, se llama a `MaterialRules.stepParticle()`, que
-     aplica la primera regla que encaja y escribe en el búfer siguiente; si no le
-     toca, la celda se copia tal cual al búfer siguiente.
+   - **Barrido**: se recorre la rejilla fila por fila y, en cada celda que no esté
+     ya resuelta en el búfer siguiente, se pregunta a su material si le toca en
+     este paso (`Material.isDue`). Si le toca, se llama a
+     `MaterialRules.stepParticle()`, que aplica la primera regla que encaja y
+     escribe en el búfer siguiente; si no le toca, la celda se copia tal cual. Una
+     celda con algo ya escrito en el búfer siguiente no tiene turno: o estaba
+     vacía —y no había nada que hacer— o la escribió una regla que llegó antes,
+     como la otra mitad de un cambio (§7.4).
    - **Intercambio**: `advanceGeneration()` cambia `cells` por `nextCells` y vacía
      el que queda libre. Nunca se copian datos: se intercambian las referencias.
 3. **Pintado** (`FRAMES_PER_PAINT = 1`): la imagen se rehace en todos los
@@ -81,20 +84,33 @@ está por encima de los relojes de los materiales: no cambia ninguna regla.
    fotograma y no del paso. La rejilla se expande a bloques de 8x8 píxeles en un
    `byte[]` BGRA y se manda a la imagen en una sola llamada.
 
+**Por qué el multiplicador es impar.** El agua da un paso en cada paso del mundo,
+así que con 9 cae **nueve celdas entre fotograma y fotograma**, y el pincel suelta
+una gota cada dos pasos: el chorro es una cadena de gotas separadas dos celdas. Con
+el multiplicador en 8 cada imagen desplazaba la cadena ocho filas, un múltiplo
+exacto de esa separación, así que las gotas caían siempre en filas de la misma
+paridad: el chorro se veía como una línea discontinua **congelada** en el aire, con
+las filas de la otra paridad siempre vacías en el instante del pintado (el efecto de
+la rueda del carro). Con 9 la cadena avanza una celda respecto de su propia red en
+cada imagen y se ve caer. Lo que importa no es que el multiplicador sea impar sino
+el producto **`ENGINE_MULTIPLIER × FRAMES_PER_PAINT`**, porque el pintado se salta
+fotogramas: con el multiplicador en 9 y el pintado de dos en dos el producto vuelve
+a ser par y el chorro se congela otra vez.
+
 ### El reloj de cada material
 
 El renderer lleva dos contadores y cada uno tiene su trabajo. `frameCounter`
 cuenta **fotogramas** y lo dividen el golpe y el pintado; `stepCounter` cuenta
 **pasos del mundo** y lo dividen los materiales y el pincel. Con el multiplicador
-en 4 hay cuatro pasos por fotograma, es decir, 240 pasos por segundo.
+en 9 hay nueve pasos por fotograma, es decir, 540 pasos por segundo.
 
 Cada material guarda cada cuántos pasos da uno de los suyos: es el número que va
 después del `spread` en `Material.LIST`. El agua va con 1 y da un paso en todos los
-pasos (240 por segundo); la arena va con 6 y da uno de cada seis (40 por segundo),
-así que cae y se abre a un sexto de la velocidad del agua. La madera, el fuego y el
-humo van con 3 porque sus vidas están medidas en pasos: dan 80 por segundo, y su
-banda sigue contando filas, porque cada turno que dan es una fila que suben o un
-paso de vida que gastan.
+pasos (540 por segundo); la arena va con 12 y da uno de cada doce (45 por segundo),
+así que cae y se abre a un doceavo de la velocidad del agua. La madera, el fuego y
+el humo van con 9 porque sus vidas están medidas en pasos: dan 60 por segundo, uno
+por fotograma, y su banda sigue contando filas, porque cada turno que dan es una
+fila que suben o un paso de vida que gastan.
 
 La partícula que no tiene el turno **no se omite del todo**: su celda se copia al
 búfer siguiente. No es un extra, es obligatorio, porque el barrido escribe en el
@@ -104,9 +120,10 @@ color y su vida hasta que le vuelva a tocar.
 **El pincel usa el mismo reloj, al doble.** `dropUnderMouse()` se llama dentro del
 paso y suelta un grano cada **dos** turnos del material seleccionado
 (`stepCounter % (stepPeriod * 2)`): uno cada veinticuatro pasos para la arena (una
-vez cada seis fotogramas) y uno cada dos para el agua (dos por fotograma). Dos
-turnos y no uno porque un grano caído en el mismo turno en que nace aparece en la
-celda que el anterior acaba de dejar, y el `match` mira la generación anterior:
+vez cada dos fotogramas y dos tercios) y uno cada dos para el agua (cuatro y medio
+por fotograma). Dos turnos y no uno porque un grano caído en el mismo turno en que
+nace aparece en la celda que el anterior acaba de dejar, y el `match` mira la
+generación anterior:
 todavía lo ve ahí, no cae y se desliza en diagonal. Con un turno de hueco en medio
 siempre nace sobre celda libre y el chorro baja recto. Es el mismo truco que hacía
 `DROP_EVERY_FRAMES = 2` antes de que existieran los relojes, pero atado al material
@@ -116,21 +133,24 @@ en vez del fotograma: medido, el chorro pasa de 3 celdas de ancho a 1.
 reparte la ventaja cuando dos partículas quieren la misma celda, y solo sirve
 alternando *entre turnos de la misma partícula*. Como los turnos de un material se
 cuentan en pasos y el sentido se cambia por fotograma, lo que hay que mirar es en
-qué fotogramas caen sus turnos: la arena da uno cada 6 pasos y un fotograma tiene 4,
-así que sus turnos caen en los fotogramas 0, 1, 3, 4, 6… y ven los dos sentidos. Los
-materiales más rápidos que el fotograma (agua con 1, madera, fuego y humo con 3) se
-evalúan varias veces por fotograma y acaban viendo los dos sentidos de todas formas.
-Si el cociente `reloj / multiplicador` fuera entero y par, todos los turnos caerían
-del mismo lado: medido con la arena en 12 y el multiplicador en 2 (cociente 6), el
-bloque se iba 5,4 celdas a un lado y se aplanaba (13 de alto y 42 de ancho, frente a
-17 y 37). Con el reloj de hoy, un montón de 200 granos soltado sobre un charco de
-800 gotas acaba a 0,06 celdas del centro.
+qué fotogramas caen sus turnos: la arena da uno cada 12 pasos y un fotograma tiene
+9, así que sus turnos caen en los fotogramas 0, 1, 2, 4, 5, 6, 8, 9… y ven los dos
+sentidos. Los materiales más rápidos que el fotograma (el agua, con 1) se evalúan
+varias veces por fotograma y acaban viendo los dos sentidos de todas formas. La
+madera, el fuego y el humo, con 9, caen una vez por fotograma, en el primer paso de
+cada uno, y también los ven. Si el cociente `reloj / multiplicador` fuera entero y
+par, todos los turnos caerían del mismo lado: medido con la arena en 12 y el
+multiplicador en 2 (cociente 6), el bloque se iba 5,4 celdas a un lado y se
+aplanaba (13 de alto y 42 de ancho, frente a 17 y 37). Hoy 12 / 9 no es entero
+(1,33), que es justo lo que hace falta.
 
 ### Dos detalles del barrido que importan
 
 - **Doble búfer**: `cells` es lo que se lee, `nextCells` lo que se escribe. Nadie
-  mira `nextCells` salvo para comprobar si una celda sigue libre (`isFree`).
-  Gracias a eso una partícula no puede "verse" a sí misma dos veces.
+  mira `nextCells` salvo para comprobar si una celda sigue libre (`isFree`) y para
+  saber qué celdas ya están resueltas (`stepCell` se salta las que no están
+  vacías). Gracias a eso una partícula no puede "verse" a sí misma dos veces, y un
+  cambio puede escribir la celda que todavía no ha llegado a su turno (§7.4).
 - **El sentido del barrido se alterna** cada fotograma (`frameCounter & 1`).
   Cuando dos partículas quieren la misma celda, gana la que se lee primero; con
   un sentido fijo, la misma partícula ganaría siempre y las pilas crecerían
@@ -146,7 +166,7 @@ bloque se iba 5,4 celdas a un lado y se aplanaba (13 de alto y 42 de ancho, fren
 | Valor | Significado |
 |---|---|
 | `0` | vacío (se dibuja blanco) |
-| `1` a `191` | un material, con su vida |
+| `1` a `222` | un material, con su vida |
 | resto | sin uso |
 
 Que el material y la vida sean **el mismo número** es la decisión central del
@@ -166,48 +186,59 @@ cualquiera de los 30 valores del fuego.
 
 | Glifo | Material | Valores | Vida | Nace en | Reloj | Rampa |
 |---|---|---|---|---|---|---|
-| `S` | arena | 1-25 | no | 1-25 | 6 | amarillo pálido → ocre dorado |
-| `A` | agua | 26-45 | no | 26-45 | 1 | azul claro → azul profundo |
-| `M` | madera | 46-75 | sí (30 pasos) | 46-54 | 3 | madera clara → madera oscura |
-| `F` | fuego | 76-105 | sí (30 pasos) | 76-81 | 3 | amarillo pálido → naranja → rojo |
-| `H` | humo | 106-185 | sí (80 pasos) | 106-111 | 3 | gris oscuro → gris claro |
-| `N` | agua que sujeta un grano | 186-191 | no (la banda es la espera) | 186 | 6 | azul agua, un punto más oscuro |
+| `S` | arena | 1-25 | no | 1-25 | 12 | amarillo pálido → ocre dorado |
+| `A` | agua | 26-82 | no (la cola de la banda es la espera) | 26-33 | 1 | azul medio → azul claro, y la espera plana |
+| `M` | madera | 83-112 | sí (30 pasos) | 83-91 | 9 | madera clara → madera oscura |
+| `F` | fuego | 113-142 | sí (30 pasos) | 113-118 | 9 | amarillo pálido → naranja → rojo |
+| `H` | humo | 143-222 | sí (80 pasos) | 143-148 | 9 | gris oscuro → gris claro |
 
 Las bandas se asignan solas en el orden de la lista, desde 1. Añadir un material
 es añadir una línea; los valores se recalculan.
 
-`N` no es un material que se pinte: es el **estado** de la gota que tiene un grano
-de arena encima y está esperando para cambiarse de sitio con él (§8). Su banda no
-es una vida, es la espera: seis valores que se recorren en cinco turnos con el
-`W`, más el hueco hasta el siguiente turno del grano, que es lo que da los **nueve
-fotogramas por fila** medidos (0,15 s, 6,7 filas por segundo, frente a 40 en el
-aire). Los colores son los del agua un poco más oscuros, para que se note algo y el
-charco no cambie de color. Como no tiene vida, no se pinta el fantasma blanco del
-último valor y la espera no parpadea.
+La banda del agua tiene dos tramos que no son lo que parecen. Los ocho primeros
+valores son los tonos con los que nace una gota (`spread = 8`), y de ahí al último
+la banda **es la espera** de un grano: la gota que tiene arena encima recorre esos
+valores de uno en uno con el `W` (§8) y el grano se hunde cuando llega al final. Por
+eso las paradas de color del tramo de espera son casi la misma: la cuenta avanza sin
+que el charco cambie de color. Como no tiene vida, tampoco se pinta el fantasma
+blanco del último valor y la espera no parpadea. Y el ancho está medido: una gota
+nacida en cualquiera de los ocho primeros valores tarda entre 49 y 56 pasos en
+llegar al final, que son más de cuatro turnos del grano (48) y menos de cinco
+(60), así que todo grano se hunde en su quinto turno y una fila cuesta siempre 60
+pasos del mundo: 6,7 fotogramas con el multiplicador en 9.
 
 El ancho de cada banda no es decorativo: **es la vida**, y subir cuesta un paso
 por fila. El lienzo por defecto mide 75 filas, así que el fuego, que se apaga a
 un tercio de pantalla, se queda con 30 pasos; el humo, que es lo que tiene que
 subir hasta el techo, necesita 80 (75 filas más el margen del nacimiento). La
 madera se queda con 30 porque su vida es lo que tarda en arder, no lo que sube.
-El reloj no cambia esa cuenta: el fuego y el humo llevan reloj 3, así que dan un
-paso cada tres pasos del mundo y sus 30 u 80 turnos siguen siendo 30 u 80 filas. La
-arena, en cambio, con reloj 6 baja una fila cada seis pasos, es decir, una cada
-fotograma y medio con el multiplicador en 4.
+El reloj no cambia esa cuenta: el fuego y el humo llevan reloj 9, así que dan un
+paso cada nueve pasos del mundo y sus 30 u 80 turnos siguen siendo 30 u 80 filas.
+La arena, en cambio, con reloj 12 baja una fila cada doce pasos, es decir, una
+cada fotograma y un tercio con el multiplicador en 9.
 
 ---
 
 ## 5. La vida es la posición en la banda
 
 Para un material con vida, la posición dentro de su banda **es** su edad. Cuatro
-glifos la mueven, y solo cuatro:
+glifos la mueven, y solo cuatro (más uno que la sortea de nuevo, `B`, al final de
+esta sección):
 
 | Glifo | Efecto | Para qué |
 |---|---|---|
-| `V` | +1, y al llegar al final vuelve al principio | Ciclos sin fin: es lo que reinicia la espera de la gota que sujeta un grano (§8) |
+| `V` | +1, y al llegar al final vuelve al **primer** valor | Ciclos sin fin, siempre con el mismo tono de arranque |
 | `W` | +1, y al llegar al final **se queda ahí** | Envejecer hasta morir |
 | `r` | Se salta a la mitad de la vida que le **queda** | Quemar deprisa |
 | `l` | Retrocede a la mitad de la vida que ya **gastó** | Rejuvenecer / alimentar |
+| `B` | La partícula con un valor **sorteado** entre los primeros de su banda | Volver a empezar sin que todo acabe del mismo color. Hoy ninguna regla lo usa: el cambio de sitio mueve el valor que la partícula ya tenía (§7.4) |
+
+`B` es a `V` lo que `spawn()` a un valor fijo: los dos vuelven al principio de la
+banda, pero `B` sortea el tono. Se escribe con mayúscula y **no** es una letra de
+material, aunque lo parezca: igual que `X`, `V` y `W`, es una orden de escritura.
+Su diferencia con una letra de material es la de siempre: una letra **crea** una
+partícula nueva y deja sin reclamar la que se estaba moviendo, que al final del
+paso se escribe en su propia celda (§7.2, salida 5).
 
 Detalles que no son obvios:
 
@@ -258,8 +289,8 @@ orden de escritura en el `result`**.
 | `?` | cualquier cosa (ni se evalúa) |
 | `X` | cualquier partícula; los bordes laterales e inferior cuentan como partícula |
 | `_` | hueco; **por encima de la rejilla todo cuenta como hueco** |
-| `S` `A` `M` `F` `H` `N` | cualquier valor de ese material |
-| `s` `a` `m` `f` `h` `n` | **solo el último valor** de ese material: existe pero ya no tiene vida (para la marca `n` es el que dice que ya ha esperado bastante) |
+| `S` `A` `M` `F` `H` | cualquier valor de ese material |
+| `s` `a` `m` `f` `h` | **solo el último valor** de ese material: existe pero ya no tiene vida (en el agua, el que dice que ya ha esperado bastante) |
 
 ### En el `result` (la escritura)
 
@@ -268,19 +299,26 @@ orden de escritura en el `result`**.
 | `?` | nada (deja la celda como esté) |
 | `_` | vacío |
 | `X` | la partícula, con su valor exacto |
-| `S` `A` `M` `F` `H` `N` | una partícula **nueva** de ese material, con `spawn()` |
+| `S` `A` `M` `F` `H` | una partícula **nueva** de ese material, con `spawn()` |
 | `x` | la partícula, sorteada entre todas las `x` del resultado |
 | `o` | una partícula **nueva** con una parte de la vida que le queda a la partícula |
 | `V` `W` `r` `l` | la partícula, con su vida avanzada o retrocedida |
+| `B` | la partícula, con un valor **sorteado** entre los primeros de su banda (`spawn()`) |
+| `P` | el cambio de sitio: la partícula va a esta celda y la que había aquí viene a la suya, las dos escritas a la vez (§7.4) |
+| `p` | como `P`, con las celdas de este glifo **compartiendo** el cambio, una parte igual para cada una |
 
 ### `x` frente a `o`
 
 Es la diferencia entre **mover** y **crear**:
 
 - `x` (compartido): solo **una** de las celdas se queda la partícula, así que
-  nada se duplica. Las dos diagonales libres se sortean al 50 %. Si ninguna gana
-  el dado, la reserva garantiza que la última se la quede: **la partícula nunca
-  se pierde**.
+  nada se duplica. El dado se tira **una vez por regla**, con una cara por celda,
+  y se queda la celda que marca: con dos diagonales libres sale al 50 % cada una,
+  y con tres o más sigue saliendo a partes iguales. Tirarlo celda a celda no vale:
+  la primera ganaría una vez entre *n*, la segunda la misma parte de lo que queda
+  y la última se llevaría el resto. Con dos caras eso aún sale mitad y mitad, así
+  que el sesgo solo aparece a partir de tres, y por eso estuvo dormido hasta que
+  una regla pidió tres destinos (`p`).
 - `o` (repetido): cada celda tira **su propio** dado, y pueden ganar varias. Es
   el único glifo que crea de la nada, y por eso solo escribe en celdas vacías.
   La vida que le queda a la partícula **se reparte entre las copias**
@@ -333,18 +371,20 @@ int destinationX, destinationY, destinationValue;   // dónde y con qué valor
 boolean originWritten;      // ¿la regla hizo algo en la celda de la partícula?
 ```
 
-El valor va separado de las coordenadas porque `V`, `W`, `r` y `l` **mueven y
-envejecen a la vez**: el destino no es "la partícula", es "la partícula con otro
-valor".
+El valor va separado de las coordenadas porque `V`, `W`, `r`, `l` y `B` **mueven y
+cambian el valor a la vez**: el destino no es "la partícula", es "la partícula con
+otro valor".
 
-Y al final hay exactamente cuatro salidas posibles:
+Y al final hay exactamente cinco salidas posibles:
 
-1. **Alguien la reclamó** y el destino está libre → se escribe en el destino. Mover.
-2. **Alguien la reclamó** pero otra partícula llegó antes a esa celda → vuelve a
+1. **La regla pide un cambio de sitio** → se escriben las dos celdas del cambio
+   (§7.4). El cambio manda sobre todo lo demás.
+2. **Alguien la reclamó** y el destino está libre → se escribe en el destino. Mover.
+3. **Alguien la reclamó** pero otra partícula llegó antes a esa celda → vuelve a
    su sitio. Nunca se pierde nada.
-3. **Nadie la reclamó** y la regla no tocó su celda → se queda donde estaba. Es
+4. **Nadie la reclamó** y la regla no tocó su celda → se queda donde estaba. Es
    el "no pasa nada".
-4. **Nadie la reclamó** y la regla escribió otra cosa en su celda (un `_` o una
+5. **Nadie la reclamó** y la regla escribió otra cosa en su celda (un `_` o una
    letra) → la partícula **se consume**. Esa es la forma de transformar un
    material: `m → F` significa "vacía esta celda de madera agotada y pon fuego".
 
@@ -356,6 +396,55 @@ ignora: escribir "fuera del mundo" no es un error, simplemente no ocurre.
 Las escribe la que llegue primero en el barrido; la segunda se encuentra la celda
 ocupada y vuelve a su sitio (salida 2). Por eso el sentido del barrido se
 alterna: para que "llegar primero" no signifique siempre lo mismo.
+
+### 7.4 El cambio de sitio
+
+`P` y `p` escriben **las dos celdas** del cambio, no solo la suya, cuando el
+barrido lee la partícula que lo pide:
+
+1. El grano escribe **su partícula** en la celda de la gota y **la gota** en su
+   propia celda. Las dos mitades salen de la misma foto del mundo, así que ninguna
+   ve el resultado de la otra.
+2. La celda de la gota todavía tiene su turno por delante y su regla escribiría
+   encima. No lo toma: **el barrido se salta cualquier celda que ya tenga algo en
+   la generación siguiente** (`stepCell`).
+3. Si la celda de la gota ya estaba tomada, el cambio no ocurre y el grano se
+   queda donde estaba, igual que cualquier otra regla que encuentra su destino
+   ocupado.
+
+El punto 2 no necesita nada más, y ahí está la gracia: **una partícula solo se
+escribe donde no había nada** (todas las escrituras van con `isFree`, salvo la de
+la propia celda), así que en las celdas que el barrido todavía no ha leído
+`nextCells` está vacía. Si al llegar a una celda hay algo, o estaba vacía en
+`cells` —y entonces su turno no hacía nada— o lo escribió una regla que llegó
+antes: una partícula que cayó dentro o un cambio, que ya escribió las dos mitades.
+
+Antes eso no se podía saber, así que el cambio se **anotaba**: un array
+`exchanges` guardaba las coordenadas del que lo empezaba, y la celda de la gota lo
+completaba al llegarle el turno. Era el único estado del motor fuera de `cells` y
+`nextCells`, y ya no hace falta: la nota es el propio valor que el cambio deja en
+el destino.
+
+El cambio solo puede **mirar hacia abajo**, y se valida al cargar la tabla: el
+barrido escribe de arriba abajo, así que la celda de debajo es siempre una que no
+se ha leído. Hacia arriba la encontraría ya resuelta y la comprobación de libre lo
+cancelaría; de lado, el sentido de la fila se sortea cada fotograma, así que el
+cambio ocurriría en la mitad de los fotogramas y no en la otra. Un `P` fuera de la
+fila de abajo revienta al arrancar.
+
+La gota que queda suelta **no siempre sube**. Antes de escribirla se mira si la
+celda del grano tiene algún **lado libre** en esta generación y en la
+siguiente: si lo tiene, la gota sale por ahí y la celda del grano se queda vacía;
+si no, sube. Un grano que cae en el agua desplaza una gota, y una gota con sitio
+al lado se escurre, no se deja empujar hacia arriba. Sin esa salida el agua
+subía por dentro de cualquier columna de una celda de ancho hasta el aire: medido
+con el arnés, con la superficie del pozo en la fila 20 de una ventana de 36, la
+gota más alta llegaba a la **fila 1**; con la salida llega a la **fila 12**, que
+es el nivel que ha subido el pozo con la arena dentro.
+
+Y la gota sube con el valor que ya tenía: el cambio mueve el valor de `cells`, no
+lo dibuja, así que el pozo conserva la variedad de tonos sin que ninguna regla
+tenga que sortear una sombra nueva.
 
 ---
 
@@ -466,51 +555,60 @@ ellas).
 ### La gota que sujeta un grano: el hundimiento lento
 
 Cuando un grano cae sobre agua no se hunde: se queda encima, y la gota que lo
-sostiene pasa a ser una **marca** (`N`) que cuenta la espera. Cuando la espera
-termina, los dos **cambian de sitio**: el grano baja una fila y la gota sube una.
+sostiene empieza a **envejecer**. Cuando llega al final de su banda, los dos
+**cambian de sitio**: el grano baja una fila y la gota sube una. No hay ningún
+material nuevo: la espera es la posición de la gota dentro de su banda (§5), y por
+eso el tramo de espera de esa banda está pintado de un solo color.
 
-```
-1. la gota se marca               2. la marca envejece
-?S?      ???                      ?S?      ???
-?A?  ->  ?N?                      ?N?  ->  ?W?
-???      ???                      ???      ???
+| Regla | Dibujo | Qué cuenta |
+|---|---|---|
+| `WATER_WAITS_UNDER_SAND` | `?S? / ?A? / ???` → `??? / ?W? / ???` | La gota que tiene un grano encima avanza un paso en su banda y no se va a otro sitio: la espera no se gasta cayendo ni nivelando |
+| `WATER_FORGETS_THE_WAIT` | `?a?` → `?A?` | Una gota que llegó al final **sin** grano encima vuelve a nacer: la arena se ha ido y no hay con quién cambiar |
+| `SAND_SINKS_SIDEWAYS_INTO_WATER` | `??? / ?S? / AaA` → `??? / ??? / ppp` | Con la gota de debajo al final de su banda y las dos diagonales también agua, el grano baja a una de las tres, sorteadas |
+| `SAND_SINKS_STRAIGHT_INTO_WATER` | `??? / ?S? / ?a?` → `??? / ??? / ?P?` | Lo mismo cuando las diagonales no son agua: el grano baja recto, sin elegir |
 
-3. el grano baja                 4. la marca sube y reinicia la espera
-???      ???                      ?S?      ?V?
-?S?  ->  ?_?                      ?n?  ->  ???
-?n?      ?X?                      ???      ???
+En `AaA` el `a` del centro es la gota **que el grano tiene debajo**, la única que
+la espera ha mirado; las de las diagonales son agua cualquiera. Y `ppp` es el
+cambio de sitio repartido entre las tres (§7.4): el grano baja a una, sorteadas a
+partes iguales, y **una sola** gota sube. La de subir no se sortea con `x` porque
+el grano y la gota no cambian de valor, solo de celda: el cambio escribe las dos
+mitades y el barrido se salta la celda de la gota (§7.4).
 
-5. la marca sin grano encima vuelve a ser agua:  ?N? -> ?A?
-```
+Los dos hundimientos van **después** de la espera y de la de olvidar: la espera
+deja la gota al final de su banda un paso antes, y el olvido reinicia la que ya no
+tiene grano. Y las cuatro van antes de `FREE_FALL`, porque la gota que espera
+sigue siendo agua y, sin grano encima, vuelve a nacer antes de que le toque
+moverse. La de esperar va antes que la de olvidar, que encaja con cualquier gota
+del final de su banda y reiniciaría la que todavía tiene un grano encima.
 
-El cambio de sitio se escribe con **dos reglas**, una desde cada partícula, porque
-una regla solo puede escribir su propia partícula (§7.2): el grano no puede mover a
-la gota ni la gota al grano. Los dos dibujos están calculados para que **no se
-pisen**: el 3 vacía la celda del grano, para que la gota tenga dónde subir, y el 4
-no escribe nada en la suya, para no borrar el grano que acaba de caer ahí. Funciona
-porque las filas se barren **de arriba abajo**: el grano se mira siempre antes y la
-celda que deja ya está vacía cuando la gota la pide. Con el orden al revés, o con
-un `_` en el centro del dibujo 4, uno de los dos desaparecía en cada cambio.
+**El ritmo.** Cada fila cuesta lo que tarda la gota de debajo en llegar al final
+de su banda: unos 57 pasos, y el grano la mira una vez cada 12, así que cada fila
+son **60 pasos exactos**, 6,7 fotogramas con el multiplicador en 9, frente al
+fotograma y un tercio del aire. Medido con el arnés, un grano sobre un pozo de
+agua: fila 1 en el paso 1, fila 2 en el 61, fila 3 en el 121... fila 15 en el 841,
+sesenta por fila.
+Y la cuenta de partículas se conserva: los granos que entran son los que salen y
+las gotas que entran son las que salen.
 
-La marca sube con `V` y no con `X`: al subir **vuelve al primer valor de su banda**.
-Sin eso la espera se pagaría una sola vez, porque a partir del segundo grano la
-marca ya estaría en el último valor y cada grano se hundiría en un paso, al ritmo
-del aire. Medido: de 9 fotogramas por fila a 1,5.
+**La gota que sube no sube sola.** Lo que el grano deja al caer es una gota
+desplazada, y una gota con un lado libre se **escurre** por ahí en vez de subir
+(§7.4): una columna de una celda de ancho tiene los dos lados libres en el aire,
+así que el agua no puede trepar por ella. Sin esa salida, cualquier chorro de
+arena subía el agua por dentro hasta arriba del todo. Medido con el arnés, con la
+superficie del pozo en la fila 20 de una ventana de 36 y un chorro de 101 granos:
+la gota más alta llegaba a la **fila 1** antes y a la **fila 12** después, que es
+el nivel que sube el pozo con la arena dentro. Dentro del agua no hay lados
+libres, así que la gota sube igual y el hundimiento no cambia.
 
-La de subir va **antes** que la de envejecer aunque parezca lo contrario: `?N?`
-encaja con toda la banda, el último valor incluido, así que si envejeciera primero
-la marca de una gota que ya ha esperado no subiría nunca y el grano se quedaría
-para siempre encima. Y las cuatro van antes de `FREE_FALL`, junto al agua, porque
-la marca es un estado del agua y no un material aparte: una gota marcada que pierde
-su grano vuelve a ser agua antes de que le toque moverse.
-
-Lo que cuesta: cada grano **congela** la gota que tiene debajo mientras espera. Una
-columna de 200 granos sobre un charco de 800 gotas llega a tener 217 marcas a la
-vez en su peor momento, y poco después ninguna: todas se sueltan. Medido en 900
-fotogramas, arena 200 → 200, gotas 800 → 800, cero marcas al final y el nivel del
-charco cinco filas más alto, que es justo el volumen de los granos desalojados. El
-fuego, en cambio, todavía no reconoce `N`: las ocho reglas de `FIRE_DIES_*` piden
-`A`, así que una llama al lado de una gota marcada no ve el agua.
+**Por qué el grano no se mueve de lado mientras baja.** Un cambio lateral pone a
+las dos partículas en la misma fila, y el sentido de esa fila se sortea cada
+fotograma: en los fotogramas en que la gota se lee primero, ella resuelve su celda,
+el cambio se encuentra el destino tomado y se cancela; en los otros el cambio
+escribe las dos mitades y el barrido se salta la gota. El grano se hundiría a
+trompicones, un sí y un no alternos, y lo que pasara dependería de la paridad del
+fotograma. El cambio vertical no tiene ese problema: las dos partículas están en
+filas distintas y el barrido las mira siempre en el mismo orden, la de arriba
+primero (§7.4).
 
 ### Gravedad (sirve para todos los materiales)
 
@@ -545,19 +643,25 @@ motor.
    que la arena.
 5. **La gravedad al final, como red**: cualquier material que no diga otra cosa
    se comporta como un grano de arena.
-6. **La gota que sujeta un grano va con el agua**, antes de la gravedad, porque la
-   marca es un estado de la gota y no un material: sin grano encima vuelve a ser
-   agua antes de que le toque moverse. Y dentro de ese grupo la de subir va antes
-   que la de envejecer, porque el `?N?` de envejecer encaja también con el último
-   valor, que es justo el que tiene que subir.
+6. **Las cuatro reglas del hundimiento van juntas y antes de la gravedad**, porque
+   lo que sostiene al grano es la gota, que sigue siendo agua, y su banda es la
+   espera. Dentro del grupo el orden no es libre: la espera y el olvido van antes
+   que los dos hundimientos, porque son los que llevan la gota al final de su banda
+   (y el olvido reinicia la que ya no tiene grano encima, que encaja con cualquier
+   gota del final). Y los hundimientos van antes de `FREE_FALL`: un grano no cae
+   **al** agua, se cambia con ella.
 
 ---
 
 ## 9. La paleta y el dibujo
 
 - 256 colores; el 0 es blanco (fondo).
-- Cada banda se interpola entre dos o tres paradas de color (`Material.color`).
-  La rampa se escribe en la lista de materiales, no en el código de dibujo.
+- Cada banda se interpola entre dos y ocho paradas de color (`Material.color`).
+  La rampa se escribe en la lista de materiales, no en el código de dibujo. Las
+  paradas de más sirven para colocar un cambio de color en un punto exacto de la
+  banda: el agua usa ocho, una por cada ocho valores, para que el primer segmento
+  acabe justo donde termina el sorteo de nacimiento y el resto de la banda sea un
+  solo color.
 - El último valor de un material con vida se interpola un 85 % hacia blanco: el
   fantasma.
 - El dibujo escribe bloques de 8x8 píxeles en un `byte[]` en orden BGRA y lo
@@ -580,19 +684,18 @@ Glifo, tamaño de la banda, si tiene vida, en cuántos valores puede nacer, **ca
 cuántos pasos del mundo da un paso** y las paradas de color. La banda, la tabla
 inversa, el botón del selector y la tecla salen solos. Si no se porta de forma
 especial, cae por gravedad como la arena. El reloj es lo que lo hace rápido o
-lento **frente a los demás materiales**: 1 es un paso en cada paso, 6 es uno de
-cada seis y 12 es más lento que todo lo demás. Para acelerar o frenar el mundo
-entero no se toca el reloj, se toca `ENGINE_MULTIPLIER`, y lo único que hay que
-cuidar es que los turnos del material no caigan siempre en fotogramas del mismo
-lado (ver "El reloj de cada material").
+lento **frente a los demás materiales**: 1 es un paso en cada paso, 9 es uno de
+cada nueve y 12 es el más lento de todos, el de la arena. Para acelerar o frenar el
+mundo entero no se toca el reloj, se toca `ENGINE_MULTIPLIER`, y lo único que hay
+que cuidar es que los turnos del material no caigan siempre en fotogramas del mismo
+lado (ver "El reloj de cada material") y que `ENGINE_MULTIPLIER × FRAMES_PER_PAINT`
+sea impar, o el chorro del agua se queda congelado en el aire (§3).
 
-Un material que no se pinta, porque solo lo pone una regla, lleva un `false` más
-antes de los colores: la marca `N` del agua que sujeta un grano se declara así y
-así se queda fuera del selector y de las teclas.
-
-```java
-new Material('N', 6, false, 1, 6, false, "#8fcdf2", "#4591cd", "#1a4c80"),
-```
+Ningún material de hoy está fuera del pincel: todas las bandas son materiales del
+catálogo. La versión anterior tenía una excepción, la marca del agua que sujetaba un
+grano, declarada con un `false` antes de los colores para que no saliera en el
+selector ni en las teclas; al convertir esa espera en un tramo de la banda del agua
+desapareció la excepción y el constructor tiene ya una sola forma.
 
 ### Una regla nueva
 
@@ -677,7 +780,8 @@ Comprobaciones que han demostrado ser útiles (todas encontraron algo alguna vez
 | El fuego y el humo suben lo mismo | 29 filas la llama (banda 30) y 57 el humo (hasta el techo) |
 | El agua se aplana y la arena no | Cien gotas vertidas en un punto: lámina de 2 de alto en 100 columnas, desnivel 1; la misma arena deja un cono de 8 |
 | El chorro sale recto | Con un grano cada dos turnos del material, el agua y la arena caen en una columna de 1 celda de ancho; con uno por turno, en 3 |
-| El fotograma cabe de sobra | Pintado 0,95 ms y los cuatro pasos del mundo 0,45 ms, de los 16,6 ms que hay a 60 fps (100x75 celdas, 3750 granos) |
+| La arena se hunde sin marca | Nueve granos sobre un charco de 108 gotas: 60,08 pasos por fila (6,7 fotogramas frente a 1,3 en el aire), arena 9 → 9, gotas 108 → 108 y ninguna gota atrapada en el tramo de espera |
+| El fotograma cabe de sobra | Pintado 0,95 ms y los pasos del mundo 0,11 ms cada uno (0,45 ms los cuatro, 0,9 los ocho, medidos con el multiplicador en 8), de los 16,6 ms que hay a 60 fps (100x75 celdas, 3750 granos) |
 
 ---
 
@@ -704,6 +808,7 @@ Errores que ya se cometieron, con su síntoma, para no repetirlos:
 | Un material va a la mitad de velocidad de la que se le supone | Contar su reloj en fotogramas cuando el mundo da varios pasos por fotograma | El reloj de un material se cuenta en **pasos** (`stepCounter`); el fotograma es solo del golpe y del pintado |
 | Al subir `ENGINE_MULTIPLIER` el chorro se abre | El pincel medido en fotogramas y el material en pasos: al subir el multiplicador el grano nace pegado al anterior | Medir el pincel en los mismos pasos que el material (`stepCounter % (stepPeriod * 2)`), así el hueco se mantiene con cualquier multiplicador |
 | El chorro se abre en cono de tres columnas | El pincel suelta un grano por turno del material: nace en la celda que el anterior acaba de dejar y la generación anterior todavía lo ocupa | Gotear cada **dos** turnos del material (`stepCounter % (stepPeriod * 2)`), que deja un turno de hueco |
+| El chorro de agua se ve como una línea discontinua congelada en el aire | El producto `ENGINE_MULTIPLIER × FRAMES_PER_PAINT` es par y las gotas están separadas dos celdas: todas las imágenes pintadas muestran la cadena en filas de la misma paridad | Que el producto sea **impar**: 9 pasos por fotograma con pintado de uno en uno, o 9 con pintado de tres en tres |
 
 El número de `o` no cambia el ritmo: cada `o` tira un dado con tantas caras como
 `o` hay, así que el número esperado de hijos por generación es siempre **uno**.
@@ -720,13 +825,14 @@ quitársela —que es lo que hace el reparto de `o`— la apaga mucho antes.
 - **El calor del agua**: hoy la gota apaga la llama y sigue siendo agua; no se
   calienta ni se convierte en vapor. El humo que sube es el del fuego, no el del
   agua que lo apagó.
-- **Densidad**: hoy la arena se queda encima del agua porque las dos son
-  "partícula". Para que se hunda hace falta que el agua sea hueco para la arena,
-  es decir, una regla de arena que intercambie con agua.
+- **Densidad de verdad**: la arena ya se hunde en el agua al ritmo que marca la
+  banda del agua, pero solo con agua: en la madera o en el humo se queda encima,
+  porque ninguna de las dos bandas tiene un tramo que sirva de contador.
 - **Propagación lateral de la llama**: hoy un fuego pintado al aire se escapa
   hacia arriba y no llega a encender una pared que tenga al lado. Se arreglaría
   con una regla de fuego que no suba cuando tiene madera al lado.
-- **Arnés permanente**: el arnés se ha usado y borrado tres veces. Merece la pena
+- **Arnés permanente**: el arnés se ha usado y borrado cuatro veces. Merece la pena
   dejarlo en el repositorio como prueba de humo.
-- **El ciclo `V`**: implementado y sin usar. Es la pieza que falta para
-  materiales que se transforman en bucle (hielo ↔ agua, por ejemplo).
+- **El ciclo `V`**: hoy no lo usa ninguna regla (la gota que sube pasó a `B`), pero
+  sigue disponible para materiales que se transforman en bucle (hielo ↔ agua, por
+  ejemplo), donde interesa que el ciclo empiece siempre en el mismo valor.

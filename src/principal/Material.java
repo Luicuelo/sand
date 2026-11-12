@@ -15,15 +15,15 @@ import javafx.scene.paint.Color;
  * <p>
  * Each material also carries its own clock: how many steps of the world pass
  * between two evaluations of one of its particles. A grain of sand is looked at
- * one step in six and a drop of water in every step, so the liquid falls and
- * spreads six times faster than the grain. The clock is not the speed of the
+ * one step in twelve and a drop of water in every step, so the liquid falls and
+ * spreads twelve times faster than the grain. The clock is not the speed of the
  * world: the renderer takes several steps per frame, and that is what makes
  * everything faster or slower at once. What the clocks have to keep is the
  * alternation of the sweep, which swaps sides every frame: the question is in
  * which frames the turns of a material land, because one whose turns always land
  * on the same side reads its rows in the same direction every time and pushes its
- * pile sideways. A grain is due one step in six and a frame has four, so its
- * turns fall in frames 0, 1, 3, 4, 6... and see both sides; an even quotient
+ * pile sideways. A grain is due one step in twelve and a frame has nine, so its
+ * turns fall in frames 0, 1, 2, 4, 5, 6... and see both sides; an even quotient
  * between clock and steps per frame would keep it on one side.
  * </p>
  * <p>
@@ -58,28 +58,36 @@ class Material {
 	 * </p>
 	 * <p>
 	 * The clock is what makes the difference between a grain and a drop: the
-	 * sand is looked at one step in six and the water in every one, so the
-	 * water falls six times faster and reaches the bottom of the screen
-	 * first. The materials with life stay at three, so their lives are still
+	 * sand is looked at one step in twelve and the water in every one, so the
+	 * water falls twelve times faster and reaches the bottom of the screen
+	 * first. The materials with life stay at nine, so their lives are still
 	 * counted in steps and the fire still climbs a third of the screen, at the
 	 * pace it had before the world was sped up. The turns of a material fall one
 	 * every clock steps, so an even quotient between its clock and the steps per
 	 * frame would keep every one of them on the same side of the sweep.
 	 * </p>
+	 * <p>
+	 * The band of the water is also the wait of a grain on top of it: a drop
+	 * under a grain walks to the end of its band, and the grain sinks when it
+	 * gets there. That is why only the first values are shades of the water;
+	 * from there to the end the stops are the same colour, so a drop that is
+	 * waiting does not change the colour of the pool. The walk is measured as
+	 * well: a drop born anywhere in the first eight values needs between
+	 * forty-nine and fifty-six steps to reach the end, which is more than the
+	 * forty-eight of four turns of the grain and less than the sixty of five,
+	 * so every grain sinks on its fifth turn and a row costs sixty steps.
+	 * </p>
 	 */
 	static final Material[] LIST = {
-			new Material('S', 25, false, 25, 6, "#f7e8a4", "#e6cd66", "#b39a3a"),
-			new Material('A', 20, false, 20, 1, "#9ed7f7", "#4c9bd6", "#1b5188"),
-			new Material('M', 30, true, 9, 3, "#d8b478", "#a1713c", "#5d3d20"),
-			new Material('F', 30, true, 6, 3, "#fff6b0", "#ffb020", "#cc2a08"),
-			new Material('H', 80, true, 6, 3, "#8c8c8c", "#bdbdbd", "#e2e2e2"),
-			// The water that is holding a grain of sand on top of it, waiting to
-			// swap places with it. The band is the wait and not a life: the walk
-			// from the first value to the last is the turns the grain is held,
-			// so the band is short and the colours are almost the ones of water,
-			// and it is not painted by the brush because nobody puts it there
-			// but a rule
-			new Material('N', 6, false, 1, 6, false, "#8fcdf2", "#4591cd", "#1a4c80") };
+			new Material('S', 25, false, 25, 12, "#f7e8a4", "#e6cd66", "#b39a3a"),
+			// The first eight values are the shades a drop can be born with, and the
+			// first segment of the ramp ends right there; the stops that follow are
+			// the same colour, so the wait of a grain does not show
+			new Material('A', 57, false, 8, 1, "#5fa8d8", "#79c1e9", "#79c1e9", "#79c1e9", "#79c1e9", "#79c1e9",
+					"#79c1e9", "#79c1e9"),
+			new Material('M', 30, true, 9, 9, "#d8b478", "#a1713c", "#5d3d20"),
+			new Material('F', 30, true, 6, 9, "#fff6b0", "#ffb020", "#cc2a08"),
+			new Material('H', 80, true, 6, 9, "#8c8c8c", "#bdbdbd", "#e2e2e2") };
 
 	/** Glyph of the material that owns each palette value (0: empty). */
 	static final char[] glyphOf = new char[PALETTE_SIZE];
@@ -115,29 +123,17 @@ class Material {
 	 * particles.
 	 */
 	final int stepPeriod;
-	/**
-	 * True when the brush can put the material in the world. A state that only
-	 * a rule writes, such as the water that is holding a grain, is not offered
-	 * in the selector.
-	 */
-	final boolean paintable;
 	/** Colours the band is interpolated through. */
 	final Color[] stops;
 	/** First palette value of the band. */
 	final int first;
 
 	private Material(char glyph, int size, boolean life, int spread, int stepPeriod, String... stops) {
-		this(glyph, size, life, spread, stepPeriod, true, stops);
-	}
-
-	private Material(char glyph, int size, boolean life, int spread, int stepPeriod, boolean paintable,
-			String... stops) {
 		this.glyph = glyph;
 		this.size = size;
 		this.life = life;
 		this.spread = Math.max(1, Math.min(spread, size));
 		this.stepPeriod = Math.max(1, stepPeriod);
-		this.paintable = paintable;
 		this.stops = new Color[stops.length];
 		for (int i = 0; i < stops.length; i++)
 			this.stops[i] = Color.web(stops[i]);
@@ -269,6 +265,29 @@ class Material {
 		if (material == null || value >= material.last())
 			return value;
 		return value + 1;
+	}
+
+	/**
+	 * {@code B}: the particle again, but with a value drawn among the first ones
+	 * of its band, as if it had just been born.
+	 * <p>
+	 * It differs from a letter of the result in that it keeps the particle
+	 * instead of creating a new one: the cell it leaves is left to whoever else
+	 * claimed it, which is what a swap needs. And it differs from {@code V} in
+	 * that a cycle does not always start on the same shade: a band is never a
+	 * flat sheet, so a particle that goes round keeps the variety of the whole
+	 * band.
+	 * </p>
+	 *
+	 * @param value the palette value to draw again
+	 * @return one of the first values of its band, or the value itself when it
+	 *         belongs to no material
+	 */
+	static int reborn(int value) {
+		Material material = ofValue(value);
+		if (material == null)
+			return value;
+		return material.spawn();
 	}
 
 	/**
