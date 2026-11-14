@@ -42,6 +42,20 @@ class WorldRenderer {
 	private static final int BRUSH_RADIUS = 2; // cells painted around the mouse while SPACE is held
 	private static final int HIT_FRAMES = 10; // frames a hit force stays active
 	private static final WritablePixelFormat<ByteBuffer> PIXEL_FORMAT = PixelFormat.getByteBgraInstance();
+	/**
+	 * Glyph of the brush that paints nothing, so the mouse can be moved over the
+	 * world without drawing.
+	 * <p>
+	 * It is the glyph the rules already use for that: in a result, {@code ?} is
+	 * "nothing is written".
+	 * </p>
+	 */
+	static final char NO_BRUSH = Material.ANY;
+	/**
+	 * Glyph of the brush that empties the cells under the mouse, which is what
+	 * {@code _} writes in a result.
+	 */
+	static final char ERASER = Material.EMPTY;
 
 	private final GraphicsContext gc;
 	private final int widthPx;
@@ -60,7 +74,8 @@ class WorldRenderer {
 	private int frameCounter = 0; // frames drawn: the clock of the hit and of the picture
 	private int stepCounter = 0; // steps of the world: the clock every material divides
 	private final Palette palette = new Palette();
-	private Material selected = Material.LIST[0];
+	/** What the mouse paints: the glyph of a material, {@link #NO_BRUSH} or {@link #ERASER}. */
+	private char brush = Material.LIST[0].glyph;
 	private int hitDirection = 0; // 0 = no hit, otherwise MaterialRules.LEFT or MaterialRules.RIGHT
 	private int hitForce = 0; // strength of the hit (1 to MaterialRules.MAX_HIT_FORCE)
 	private int hitCount = 0;
@@ -185,13 +200,21 @@ class WorldRenderer {
 	}
 
 	/**
-	 * Puts a particle of the selected material in the cell of the mouse, or in
-	 * a square around it while SPACE is held.
+	 * Paints what the brush says in the cell of the mouse, or in a square around
+	 * it while SPACE is held.
 	 * <p>
-	 * The brush is part of the step, not of the picture: it runs inside
-	 * {@link #stepSimulation()} and drips one particle every two turns of the
-	 * selected material, so a material that moves one step in twelve is painted
-	 * one step in twenty-four.
+	 * The brush is a glyph, and it can be one of three things: a material, which
+	 * puts a new particle in a free cell; {@link #NO_BRUSH}, which writes nothing,
+	 * so the mouse can be moved over the world without drawing; and
+	 * {@link #ERASER}, which empties the cell. The last two are named with the
+	 * glyphs the rules already use for the same two jobs in a result, so there is
+	 * nothing new to learn: {@code ?} writes nothing and {@code _} empties.
+	 * </p>
+	 * <p>
+	 * A material is painted as part of the step and not of the picture: this runs
+	 * inside {@link #stepSimulation()} and drips one particle every two turns of
+	 * the selected material, so a material that moves one step in twelve is
+	 * painted one step in twenty-four.
 	 * </p>
 	 * <p>
 	 * Two turns and not one is what leaves the grain room to fall: painted on
@@ -200,33 +223,55 @@ class WorldRenderer {
 	 * a turn of its own in between it is always born over free space and the jet
 	 * falls as a column.
 	 * </p>
+	 * <p>
+	 * The eraser has no clock: it takes a particle away instead of putting one
+	 * down, so the grain painted a turn ago is not in its way and there is no
+	 * column to keep straight. It works on every step, which is the speed of the
+	 * mouse, and under SPACE it empties the same square the brush paints.
+	 * </p>
 	 */
 	private void dropUnderMouse() {
-		if (!mouseInside)
+		if (!mouseInside || brush == NO_BRUSH)
 			return;
-		if (stepCounter % (selected.stepPeriod * 2) != 0)
+		Material material = painted();
+		if (material != null && stepCounter % (material.stepPeriod * 2) != 0)
 			return;
 		int cellX = mouseX / PIXEL_SIZE;
 		int cellY = mouseY / PIXEL_SIZE;
 		if (spacePressed) {
 			for (int dy = -BRUSH_RADIUS; dy <= BRUSH_RADIUS; dy++)
 				for (int dx = -BRUSH_RADIUS; dx <= BRUSH_RADIUS; dx++)
-					drop(cellX + dx, cellY + dy);
+					paint(cellX + dx, cellY + dy, material);
 		} else {
-			drop(cellX, cellY);
+			paint(cellX, cellY, material);
 		}
 	}
 
 	/**
-	 * Puts a particle of the selected material in one cell, if the cell is
-	 * inside the grid and empty.
+	 * Material the brush is painting, or null when it is painting nothing or
+	 * empty space.
 	 *
-	 * @param cellX column of the cell
-	 * @param cellY row of the cell
+	 * @return the material of the brush, or null when the brush is not a material
 	 */
-	private void drop(int cellX, int cellY) {
-		if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows && cells[cellY][cellX] == 0)
-			cells[cellY][cellX] = selected.spawn();
+	private Material painted() {
+		return Material.byGlyph(brush);
+	}
+
+	/**
+	 * Applies the brush to one cell: empty space when it is the eraser, and a new
+	 * particle of the material when the cell is inside the grid and free.
+	 *
+	 * @param cellX    column of the cell
+	 * @param cellY    row of the cell
+	 * @param material material to paint, or null for the eraser
+	 */
+	private void paint(int cellX, int cellY, Material material) {
+		if (cellX < 0 || cellX >= cols || cellY < 0 || cellY >= rows)
+			return;
+		if (material == null)
+			cells[cellY][cellX] = 0;
+		else if (cells[cellY][cellX] == 0)
+			cells[cellY][cellX] = material.spawn();
 	}
 
 	/**
@@ -455,19 +500,20 @@ class WorldRenderer {
 	}
 
 	/**
-	 * Selects the material that the mouse paints.
+	 * Selects what the mouse paints: a material, nothing at all or empty space.
 	 * <p>
-	 * The glyph is enough to name a material, so the key pressed and the button
-	 * of the toolbar say the same thing. Anything that is not a material is
-	 * ignored, so the rest of the keyboard keeps working.
+	 * All three are named by a glyph, so a button of the toolbar and a key say
+	 * the same thing: the letter of a material, {@link #NO_BRUSH} and
+	 * {@link #ERASER}. Anything that is none of them is ignored, so the rest of
+	 * the keyboard keeps working.
 	 * </p>
 	 *
-	 * @param glyph glyph of the material, in lowercase or uppercase
+	 * @param glyph glyph of the brush, in lowercase or uppercase
 	 */
-	public void selectMaterial(char glyph) {
-		Material material = Material.byGlyph(Character.toUpperCase(glyph));
-		if (material != null)
-			selected = material;
+	public void selectBrush(char glyph) {
+		char name = Character.toUpperCase(glyph);
+		if (name == NO_BRUSH || name == ERASER || Material.byGlyph(name) != null)
+			brush = name;
 	}
 
 	/**

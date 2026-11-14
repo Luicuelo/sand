@@ -38,6 +38,18 @@ class Material {
 	static final char ANY = '?';
 	/** Glyph of the particle itself: any material in a match, its own value in a result. */
 	static final char PARTICLE = 'X';
+	/**
+	 * Glyphs of the materials a hit does not move: what is put in place stays
+	 * there.
+	 * <p>
+	 * A hit is a force of the mouse and not a turn of the world: it pushes what
+	 * is loose. The table says the same of the wood with a rule of its own, but
+	 * the pass that applies a hit does not read the table, so the materials it
+	 * cannot move are written here. It is a string of glyphs because it is a
+	 * short list and it reads at a glance, like a small group of materials.
+	 * </p>
+	 */
+	static final String ANCHORED = "M";
 
 	static final int PALETTE_SIZE = 256;
 
@@ -87,6 +99,25 @@ class Material {
 	 * forty-eight of four turns of the grain and less than the sixty of five,
 	 * so every grain sinks on its fifth turn and a row costs sixty steps.
 	 * </p>
+	 * <p>
+	 * The band of the acid is a charge and not a clock: the drop is not spent by
+	 * time but by what it does, one value per cell of wood it eats and one value
+	 * every age turns while water is diluting it. Falling, flowing or waiting
+	 * spend nothing, so a pool of it in the open is stable for ever. Its size is
+	 * the cells a drop can bite, and its age is the patience of the dilution: the
+	 * turns one value lasts while water eats the drop, which is what makes the
+	 * neutralisation a process and not a step, sixty turns for a value and six
+	 * hundred for the drop. A drop that has nothing left is a drop of water,
+	 * whether water ate it or it ate the wood.
+	 * </p>
+	 * <p>
+	 * Its clock is two, alone among the liquids: the acid moves and bites at half
+	 * the pace of the water, which is what makes it read as a heavy liquid and not
+	 * as a second water. That is why its age is sixty and not a hundred and
+	 * twenty: the value of the dilution is counted in turns of the material, so
+	 * the clock and the age go together, and the drop is still spent in six
+	 * hundred steps of the world.
+	 * </p>
 	 */
 	static final Material[] LIST = {
 			new Material('S', 10, false, 10, 12, 1, "#f7e8a4", "#e6cd66", "#b39a3a"),
@@ -97,7 +128,14 @@ class Material {
 					"#79c1e9", "#79c1e9"),
 			new Material('M', 16, true, 4, 22, 1, "#d8b478", "#a1713c", "#5d3d20"),
 			new Material('F', 10, true, 3, 22, 3, "#fff6b0", "#ffb020", "#cc2a08"),
-			new Material('H', 8, true, 2, 9, 13, "#8c8c8c", "#bdbdbd", "#e2e2e2") };
+			new Material('H', 8, true, 2, 9, 13, "#8c8c8c", "#bdbdbd", "#e2e2e2"),
+			// A charge and not a clock: the drop is spent by what it does, one value
+			// per cell of wood it eats and one value every sixty turns —a hundred and
+			// twenty steps, because its clock is two— while water dilutes it, so a
+			// pool of acid in the open is stable for ever. The last value is the water
+			// it gives back. The shades go from pale green to the deep green of the
+			// dregs, so a pool reads as a liquid and not as a paint
+			new Material('C', 6, true, 2, 2, 60, "#a9f0b8", "#31c05b", "#0d5f2c") };
 
 	/** Glyph of the material that owns each palette value (0: empty). */
 	static final char[] glyphOf = new char[PALETTE_SIZE];
@@ -266,6 +304,16 @@ class Material {
 	 */
 	static boolean isAgingDue(int value, int step) {
 		return (step / stepPeriodOf[value]) % agesOf[value] == 0;
+	}
+
+	/**
+	 * Whether a hit leaves a particle where it is.
+	 *
+	 * @param value the palette value of a particle
+	 * @return true when the material is put in place and a hit does not move it
+	 */
+	static boolean isAnchored(int value) {
+		return ANCHORED.indexOf(glyphOf[value]) >= 0;
 	}
 
 	/**

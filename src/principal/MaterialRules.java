@@ -18,6 +18,8 @@ package principal;
  *       until the rule that transforms the particle fires</li>
  *   <li>Creation, by copying a particle with {@code o} or by writing a material
  *       where there was nothing</li>
+ *   <li>The acid: a liquid that etches the wood it touches, spending itself
+ *       one bite per cell, and that becomes water when it runs into water</li>
  *   <li>The slow sink of the sand: a drop of water with a grain on top of it
  *       holds it for a moment, and then the two swap places</li>
  *   <li>The steam of a quench: a flame that touches water spends the drop and
@@ -73,33 +75,76 @@ class MaterialRules {
 	 * leaves there instead of going up to the top.
 	 * </p>
 	 * <p>
+	 * The cell it points at can be in the row below, which the pass has not read
+	 * yet, or in its own row, which it may have read already: there the other
+	 * particle is not in the next generation unless it wrote itself there, and
+	 * that is what is asked for, so an exchange with a cell that has already
+	 * moved away cancels instead of copying the particle that left. That is the
+	 * same criterion the writing of a new material uses (see
+	 * {@link #canHoldNewMaterial}), and the value it takes is the one of the next
+	 * generation when the cell already wrote itself, so a drop that is walking
+	 * its band keeps the value it has reached.
+	 * </p>
+	 * <p>
 	 * When the cell it points at was already taken, the exchange does not happen
 	 * and the particle stays where it was, which is the same that any other rule
 	 * does when it finds its destination occupied.
 	 * </p>
 	 *
-	 * @param x         column of the particle that changes places
-	 * @param y         row of the particle that changes places
-	 * @param targetX   column of the cell it changes places with, below it
-	 * @param targetY   row of the cell it changes places with, below it
-	 * @param cells     the current cell data
-	 * @param nextCells the next cell data (to be updated)
+	 * @param x           column of the particle that changes places
+	 * @param y           row of the particle that changes places
+	 * @param targetX     column of the cell it changes places with, below it or at
+	 *                    its side
+	 * @param targetY     row of the cell it changes places with, below it or at its
+	 *                    side
+	 * @param cells       the current cell data
+	 * @param nextCells   the next cell data (to be updated)
+	 * @param rightToLeft true when the pass is reading the rows from right to left
 	 */
-	private void exchange(int x, int y, int targetX, int targetY, int[][] cells, int[][] nextCells) {
+	private void exchange(int x, int y, int targetX, int targetY, int[][] cells, int[][] nextCells,
+			boolean rightToLeft) {
 		int particle = cells[y][x];
-		if (!isFree(targetX, targetY, nextCells)) {
-			// Somebody arrived at that cell first: the particle is kept where it
-			// was, so nothing is lost
+		if (!canGiveItsParticle(targetX, targetY, x, y, cells, nextCells, rightToLeft)) {
+			// Somebody arrived at that cell first, or its particle left: the
+			// particle is kept where it was, so nothing is lost
 			nextCells[y][x] = particle;
 			return;
 		}
+		// The value is read before the particle takes the cell: a cell the pass has
+		// already read wrote its own value there, and that is the one it keeps
+		int other = nextCells[targetY][targetX] != 0 ? nextCells[targetY][targetX] : cells[targetY][targetX];
 		nextCells[targetY][targetX] = particle;
-		int other = cells[targetY][targetX];
 		int escape = freeSide(x, y, cells, nextCells);
 		if (escape < 0)
 			nextCells[y][x] = other;
 		else
 			nextCells[y][escape] = other;
+	}
+
+	/**
+	 * Checks whether the cell a swap points at can still give the particle the
+	 * match saw in it.
+	 * <p>
+	 * A cell the pass has not reached yet is still free in the next generation and
+	 * gives whatever the match saw; a cell it has already read gives its particle
+	 * only when that particle is still written there, which is why a swap can look
+	 * at its own row without copying a drop that has already moved away.
+	 * </p>
+	 *
+	 * @param x           column of the cell the swap points at
+	 * @param y           row of the cell the swap points at
+	 * @param particleX   column of the particle that changes places
+	 * @param particleY   row of the particle that changes places
+	 * @param cells       the current cell data
+	 * @param nextCells   the next cell data
+	 * @param rightToLeft true when the pass is reading the rows from right to left
+	 * @return true when the cell can give its particle in the exchange
+	 */
+	private boolean canGiveItsParticle(int x, int y, int particleX, int particleY, int[][] cells, int[][] nextCells,
+			boolean rightToLeft) {
+		if (!readYet(x, y, particleX, particleY, rightToLeft))
+			return isFree(x, y, nextCells);
+		return stillHoldsTheSameParticle(x, y, cells, nextCells);
 	}
 
 	/**
@@ -131,7 +176,14 @@ class MaterialRules {
 	 * that side is free and is copied to {@code nextCells} unchanged when it
 	 * cannot move or when the dice say the hit misses it.
 	 * </p>
-	 * 
+	 * <p>
+	 * A hit is a force of the mouse and not a turn of the world, so it moves what
+	 * is loose: the materials of {@link Material#ANCHORED} are put in place and
+	 * stay there, and they are not even asked for the dice. They also hold the
+	 * particles behind them, because the cell of something that does not move is
+	 * never free and a push only takes a free side.
+	 * </p>
+	 *
 	 * @param x            the x coordinate of the particle
 	 * @param y            the y coordinate of the particle
 	 * @param cells        the current cell data
@@ -140,18 +192,20 @@ class MaterialRules {
 	 * @param hitDirection the direction of the hit (1 = right, -1 = left)
 	 */
 	public void pushParticle(int x, int y, int[][] cells, int[][] nextCells, int hitForce, int hitDirection) {
-		// Roll dice to determine if this particle is affected by the hit force
-		// Higher hitForce = higher probability of being affected
-		// (hitForce / MAX_HIT_FORCE chance)
-		int dice = (int) (Math.random() * MAX_HIT_FORCE);
-
-		// Check if particle should be affected by the hit force
-		if (dice < hitForce) {
-			Step step = hitDirection == RIGHT ? Pattern.PUSH_RIGHT_STEP : Pattern.PUSH_LEFT_STEP;
-			if (matches(step, x, y, cells)) {
-				// Columns are read the way the hit pushes them
-				applyPattern(step, x, y, cells, nextCells, hitDirection == RIGHT, false);
-				return;
+		// A hit is a force of the mouse: it moves what is loose, so a material
+		// that is put in place is not even asked for the dice
+		if (!Material.isAnchored(cells[y][x])) {
+			// Roll dice to determine if this particle is affected by the hit
+			// force. Higher hitForce = higher probability of being affected
+			// (hitForce / MAX_HIT_FORCE chance)
+			int dice = (int) (Math.random() * MAX_HIT_FORCE);
+			if (dice < hitForce) {
+				Step step = hitDirection == RIGHT ? Pattern.PUSH_RIGHT_STEP : Pattern.PUSH_LEFT_STEP;
+				if (matches(step, x, y, cells)) {
+					// Columns are read the way the hit pushes them
+					applyPattern(step, x, y, cells, nextCells, hitDirection == RIGHT, false);
+					return;
+				}
 			}
 		}
 		// If particle wasn't moved by hit force, keep it in the same position,
@@ -391,7 +445,7 @@ class MaterialRules {
 		if (swapX >= 0) {
 			// A swap writes both halves, so the particle is not kept in its own
 			// cell first: the exchange takes its place
-			exchange(x, y, swapX, swapY, cells, nextCells);
+			exchange(x, y, swapX, swapY, cells, nextCells, rightToLeft);
 		} else if (claimed) {
 			// The particle is written after the cells are emptied, and when another
 			// particle took the destination this frame it stays where it was, so
@@ -643,12 +697,14 @@ class MaterialRules {
 			if (count(result, Pattern.SWAPS) > 1)
 				throw new IllegalArgumentException("A result can only exchange places with one cell");
 			// A swap writes the cell it points at, and the pass only leaves alone
-			// the cells it has not read yet: that is why a swap can only look down
+			// the cells it has not read yet, or the ones that are still holding
+			// their own particle: that is why a swap can look down or to a side,
+			// but never up
 			for (int row = 0; row < result.length; row++)
 				for (int px = 0; px < result[row].length(); px++)
-					if (row <= anchorY
+					if (row < anchorY
 							&& (result[row].charAt(px) == Pattern.SWAPS || result[row].charAt(px) == Pattern.SHARED_SWAPS))
-						throw new IllegalArgumentException("A swap can only point at a row below the particle");
+						throw new IllegalArgumentException("A swap can only point at the row of the particle or below it");
 		}
 
 		/**
@@ -1090,6 +1146,59 @@ class MaterialRules {
 						"?P?" });
 
 		/**
+		 * A grain that has another grain just below it rolls down to a diagonal
+		 * when there is water there: the two change places, so a pile of sand inside
+		 * a pond collapses into a cone instead of growing as a column.
+		 * <p>
+		 * The generic slides ask for free space at the diagonal, and inside the water
+		 * there is water, not free space, so a grain that landed on another one had
+		 * nowhere to go: below it there was sand and not the drop of the wait, and
+		 * the table ended in the stacking. Under the water the grain does what it
+		 * does in the air, only paying with an exchange: it goes down to the
+		 * diagonal and the drop it displaces comes up to its cell.
+		 * </p>
+		 * <p>
+		 * The three rules go after the two sinkings, which are the ones that fit
+		 * when what is below is water, and before the generic slides, which are the
+		 * ones that fit when the diagonals are free. They are the same three
+		 * drawings as {@code SLIDE_BOTH}, {@code SLIDE_LEFT} and
+		 * {@code SLIDE_RIGHT}, read from the water: the cell in the diagonal has to
+		 * be a drop for the exchange to give a drop and take nothing away.
+		 * </p>
+		 */
+		private static final Step SAND_ROLLS_SIDEWAYS_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?S?",
+						"ASA" },
+				new String[] {
+						"???",
+						"???",
+						"p?p" });
+
+		/** The same roll when only the left-down diagonal is water. */
+		private static final Step SAND_ROLLS_LEFT_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?S?",
+						"ASX" },
+				new String[] {
+						"???",
+						"???",
+						"p??" });
+
+		/** The same roll when only the right-down diagonal is water. */
+		private static final Step SAND_ROLLS_RIGHT_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?S?",
+						"XSA" },
+				new String[] {
+						"???",
+						"???",
+						"??p" });
+
+		/**
 		 * A drop that reached the end of its band and no longer has a grain on top
 		 * of it starts again: the sand slid away, so there is nothing left to
 		 * swap with, and the drop would keep the flat shade of the wait for ever.
@@ -1243,6 +1352,491 @@ class MaterialRules {
 						"???" });
 
 		/**
+		 * The acid is the first material that pays for what it does, and the third
+		 * use of a band: after the life that a rule walks and the wait that holds a
+		 * grain, the acid shows the band as the price of a reaction. Its values are
+		 * a charge and not time: each cell of wood takes one, falling and flowing
+		 * take none, and a pool of it in the open is stable for ever. A drop is
+		 * therefore worth a handful of cells and no more, so the acid etches the wood
+		 * it touches instead of dissolving a forest.
+		 * <p>
+		 * The acid is heavier than the water, and that is a rule like any other: a
+		 * drop with water below changes places with it, so a pour goes down to the
+		 * bottom of a pond instead of resting on the surface. Without it the drop
+		 * floated, dissolved into the water it touched and never reached the wood
+		 * underneath. Going down costs nothing, so the charge arrives whole.
+		 * </p>
+		 * <p>
+		 * Going down has two drawings. When the three cells below are water the drop
+		 * goes to one of them drawn at equal parts; when the sides are not, it goes
+		 * straight down. The draw is the same one the grain of sand uses to sink, and
+		 * it is there for the look: a drop that always falls on the cell it has below
+		 * cuts the pond with columns of one cell of acid, perfectly straight, which
+		 * reads as a thread and not as a liquid. With the draw the pour opens while it
+		 * goes down and reaches the bottom spread out, the way the heavy liquid of the
+		 * world does. It costs nothing either: the three destinations are the row the
+		 * sweep has not read yet, and the change takes one drop of water up, no more.
+		 * </p>
+		 * <p>
+		 * The two reactions are paid at two speeds, and that is the why of the two
+		 * glyphs: the corroding rules write {@code r}, which charges the bite at once,
+		 * and the diluting ones write {@code W}, which waits for the age. A drop that
+		 * bites spends a value per turn; a drop that water is eating spends one every
+		 * hundred and twenty turns. Biting is an event, dissolving is a wait, and the
+		 * same band serves both because the band is the money and not the clock.
+		 * </p>
+		 * <p>
+		 * Neutralising is a process and not a step: water does not turn the acid into
+		 * water, it eats it. The drop that touches water walks its band to the end and
+		 * only then becomes water, and the water that did the eating is left as it is in
+		 * every value of the way, so a pond of acid dissolves from the surface at the
+		 * speed of the charge instead of flashing into water. With the neutralisation
+		 * done in a single step, a drop of water in a puddle of acid was the end of the
+		 * puddle: the water it wrote touched the acid next to it and the whole pond went
+		 * in a handful of frames. Measured: thirty drops at the bottom of a pond of
+		 * five hundred and seventy of water started paying towards the four hundred and
+		 * eightieth step, the outer layer went at the six hundredth, and the whole
+		 * puddle was water between the twelve hundredth and the eighteen hundredth, the
+		 * count of drops coming out whole.
+		 * </p>
+		 * <p>
+		 * The wood leaves smoke, which is what the chemistry gives: the acid eats the
+		 * wood and the wood goes up. The drop pays a bite and goes on, and when it has
+		 * nothing left it becomes water, so the acid ends neutralised whether water ate
+		 * it or it ate the wood. That end was tried before with the neutralisation done
+		 * in a single step, and it destroyed the material: the water of a spent drop
+		 * touched the acid around it and the whole pond turned into water before a pour
+		 * had landed. With the drop paying its charge to the water, the end is one drop
+		 * and the water it leaves has to eat the next, so the pond survives the first
+		 * death and dissolves from the surface. Measured: a pour of two hundred drops
+		 * ate between ninety-seven and a hundred and seventeen cells of a log of four
+		 * hundred and forty in four hundred steps, and two thousand steps later, with
+		 * the pour almost spent, between a hundred and fifty-eight and a hundred and
+		 * eighty-four, and every drop of it water.
+		 * </p>
+		 * <p>
+		 * The four drawings are written from the acid and not from the wood, and
+		 * that is not a detail: the glyphs that walk a life ({@code r}, {@code W},
+		 * {@code l}...) always write the particle of the centre somewhere, so one of
+		 * them in the cell of a neighbour moves the neighbour instead of ageing it.
+		 * Whoever pays is the one in the middle. The smoke goes in the cell of the
+		 * wood as a material glyph away from home, which takes the place of a
+		 * particle that is already there, the same mechanism as the steam of the
+		 * quench.
+		 * </p>
+		 * <p>
+		 * The order of the group is the order of the drop's life: first it goes down
+		 * through the water —straight or sideways, whichever the drawing allows—, then
+		 * it bites the wood it lands on, and only when it can do neither is it still
+		 * long enough for the water to eat it. That is why the
+		 * diluting rules go after the corroding ones: an acid that reaches the wood
+		 * inside a pond has to etch it even though it is surrounded by water, which is
+		 * the whole reason it went down. With the other order a single drop of water
+		 * at its side was enough to freeze it, and a pond of acid could sit on a plank
+		 * for ever without leaving a mark.
+		 * </p>
+		 * <p>
+		 * The order between the four decides which side is eaten when the drop has
+		 * wood on more than one, because the table is a priority list: the side
+		 * below goes first, since that is the side a drop of liquid rests on. And
+		 * the corrosion goes before the levelling, so a drop that touches wood eats
+		 * it instead of flowing away from it.
+		 * </p>
+		 * <p>
+		 * One cell is one bite, but when two drops see the same cell of wood in the
+		 * same step only one smoke is written and both bites are paid: the count of
+		 * particles is kept, the charge of that corner is not. It is also what keeps
+		 * a pool from eating through a log: the smoke of a bite has nowhere to go
+		 * under the acid, so it sits in the cell it was born in until it ages away
+		 * and the drops above have to wait for it.
+		 * </p>
+		 */
+
+		/** Acid with wood below: the wood becomes smoke and the drop pays a bite. */
+		private static final Step ACID_CORRODES_BELOW_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"?M?" },
+				new String[] {
+						"???",
+						"?r?",
+						"?H?" });
+
+		/** Acid with wood above: the wood becomes smoke and the drop pays a bite. */
+		private static final Step ACID_CORRODES_ABOVE_STEP = new Step(
+				new String[] {
+						"?M?",
+						"?C?",
+						"???" },
+				new String[] {
+						"?H?",
+						"?r?",
+						"???" });
+
+		/** Acid with wood at its left: the wood becomes smoke and the drop pays a bite. */
+		private static final Step ACID_CORRODES_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"MC?",
+						"???" },
+				new String[] {
+						"???",
+						"Hr?",
+						"???" });
+
+		/** Acid with wood at its right: the wood becomes smoke and the drop pays a bite. */
+		private static final Step ACID_CORRODES_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"?CM",
+						"???" },
+				new String[] {
+						"???",
+						"?rH",
+						"???" });
+
+		/**
+		 * An acid that has another acid just below it rolls down to a diagonal when
+		 * there is water there: the two change places and the drop of the water comes
+		 * up to the cell the acid leaves, so a column of acid inside a pond spreads
+		 * instead of standing on end.
+		 * <p>
+		 * It is the same roll as the grain of sand and for the same reason: the
+		 * levelling of the acid asks for free space at its sides, and inside the
+		 * water what it has is water, so a pool of acid that reached the bottom of a
+		 * pond stayed in the shape it fell in.
+		 * </p>
+		 * <p>
+		 * It goes after the corroding rules, because a drop that can bite has to bite
+		 * before it moves, and before the diluting ones, because a drop that still
+		 * has somewhere to go goes there before the water starts eating it. The
+		 * dilution claims the cell of the drop even on the turns its age is not due,
+		 * so with the other order a drop surrounded by water was still every turn
+		 * and a pool of acid could never spread.
+		 * </p>
+		 */
+		private static final Step ACID_ROLLS_SIDEWAYS_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"ACA" },
+				new String[] {
+						"???",
+						"???",
+						"p?p" });
+
+		/** The same roll when only the left-down diagonal is water. */
+		private static final Step ACID_ROLLS_LEFT_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"ACX" },
+				new String[] {
+						"???",
+						"???",
+						"p??" });
+
+		/** The same roll when only the right-down diagonal is water. */
+		private static final Step ACID_ROLLS_RIGHT_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"XCA" },
+				new String[] {
+						"???",
+						"???",
+						"??p" });
+
+		/**
+		 * An acid piled on more acid slides to the side when it has water at both
+		 * sides: the drop takes the place of one of the two drops of water and the
+		 * one it displaces takes the cell it leaves, so a pool of acid spreads flat
+		 * instead of standing in a cone.
+		 * <p>
+		 * The rolls above move the drop one row down and one to a side, which is
+		 * what a grain of sand does, and a heap of them keeps that shape: the
+		 * diagonal below the edge of a row is the acid of the row underneath, so
+		 * the roll never finds the water it needs and the slope of the cone stays
+		 * at forty-five degrees in every layer. A liquid has no such slope. Its
+		 * levelling, the one the water does in the air, is written with {@code x},
+		 * which only writes where there is free space; inside a pond what the drop
+		 * has at its sides is water, so that rule never matches and a drop of acid
+		 * with acid below it and nothing to bite could only stay where it was.
+		 * </p>
+		 * <p>
+		 * So this is an exchange and not a write: the drop takes the place of the
+		 * water at its side and that water takes the cell the drop leaves. The drop
+		 * stays in its own row, which is not a climb, and the count of drops does
+		 * not move. When it slides out of the footprint of the row underneath, what
+		 * it has below is water and the sinking of the drops takes it down, so the
+		 * top of the pool goes down by its sides and the surface flattens; the drop
+		 * of water it leaves behind is the hole it has just vacated.
+		 * </p>
+		 * <p>
+		 * It asks for acid below, so it is the levelling of a pile and not a way of
+		 * walking in the water: a drop with water below it goes down with the
+		 * sinking rules, which come first, and the last row of a pool does not
+		 * match, because what it has below is the floor of the pond. That is what
+		 * keeps the bottom of the pool from sliding away.
+		 * </p>
+		 * <p>
+		 * The exchange can point at its own row, which the pass may have read
+		 * already: the swap asks for the neighbouring drop to still be written
+		 * there, so a drop that flowed away in this very step is not swapped with a
+		 * second time (see {@link #exchange}).
+		 * </p>
+		 * <p>
+		 * It goes with the rolls and before the diluting rules, for the same reason
+		 * as them: a drop that still has somewhere to go goes there before the
+		 * water starts eating it.
+		 * </p>
+		 */
+		private static final Step ACID_LEVELS_SIDEWAYS_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"ACA",
+						"?C?" },
+				new String[] {
+						"???",
+						"p?p",
+						"???" });
+
+		/** The same levelling when only the left side is water. */
+		private static final Step ACID_LEVELS_LEFT_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"ACX",
+						"?C?" },
+				new String[] {
+						"???",
+						"p??",
+						"???" });
+
+		/** The same levelling when only the right side is water. */
+		private static final Step ACID_LEVELS_RIGHT_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"XCA",
+						"?C?" },
+				new String[] {
+						"???",
+						"??p",
+						"???" });
+
+		/**
+		 * An acid that has spent its charge becomes water: the drop reaches the last
+		 * value of its band by eating wood or by being eaten by water, and in both
+		 * cases what is left is a drop of water in the cell it occupied.
+		 * <p>
+		 * The water is spawned, so it is born with one of the shades a drop is born
+		 * with, and the water that was doing the eating keeps its own value: the rule
+		 * writes only the centre, and a liquid product written over the neighbour would
+		 * start it again and reset the wait of a grain resting on it.
+		 * </p>
+		 * <p>
+		 * It has to go before the diluting and the corroding rules, because both walk
+		 * the centre with a glyph that cannot pass the end of the band: a spent drop
+		 * next to water would wait for an age that can no longer change it, and a spent
+		 * drop next to wood would bite without paying. Going first, the last value is
+		 * always a water and never a value that has run out of its band.
+		 * </p>
+		 * <p>
+		 * It is not one of the ends that the group of {@code FIRE_END} and
+		 * {@code SMOKE_END} holds: a spent acid does not die, it is neutralised, and
+		 * what is left is a liquid that the rules of the water take over.
+		 * </p>
+		 */
+		private static final Step ACID_END_STEP = new Step(
+				new String[] { "c" },
+				new String[] { "A" });
+
+		/**
+		 * The same sinking, spread over the three cells below: with water on all of
+		 * them the drop goes down to one of the three, drawn at equal parts, so a pour
+		 * that crosses a pond does not cut it in a column.
+		 * <p>
+		 * It is the drawing the grain of sand uses to sink in water, and the reasons
+		 * are the same: the three cells of the row below have not been read yet, which
+		 * is the only direction a swap can be written in, and {@code p} shares the
+		 * change, so one of the three takes the drop and only one drop of water comes
+		 * up.
+		 * </p>
+		 * <p>
+		 * When the side cells are not water the rule does not match and the drop goes
+		 * straight down, which is what keeps an acid that falls into a pond through
+		 * its surface from leaving it sideways the moment it touches the water.
+		 * </p>
+		 */
+		private static final Step ACID_SINKS_SIDEWAYS_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"AAA" },
+				new String[] {
+						"???",
+						"???",
+						"ppp" });
+
+		/**
+		 * Acid heavier than water sinks in it: the drop changes places with the water
+		 * directly below, so a pour reaches the bottom of a pond, which is where the
+		 * wood is.
+		 * <p>
+		 * It goes before the diluting rules, and that is what makes the two work
+		 * together: a drop that touches water can either go down or be eaten, and it
+		 * goes down. Only the drop that has no water below and no wood to bite stays
+		 * still long enough to be eaten, so the charge is spent where it is useful
+		 * and not on the way.
+		 * </p>
+		 * <p>
+		 * It comes after the sideways one, which is the same sinking drawn over the
+		 * three cells below: when all three are water the drop goes to one of them,
+		 * and straight down only when the side cells are not.
+		 * </p>
+		 * <p>
+		 * The water comes up into the cell the acid leaves, and the exchange is
+		 * written whole by the rule, the same way as the grain that sinks in acid.
+		 * The cell below is one the sweep has not read yet, which is the only
+		 * direction a swap can be written in.
+		 * </p>
+		 */
+		private static final Step ACID_SINKS_IN_WATER_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"?A?" },
+				new String[] {
+						"???",
+						"???",
+						"?P?" });
+
+		/**
+		 * Water at any of the four sides eats a value of the acid: the drop pays a
+		 * value of its charge and the water is left as it is.
+		 * <p>
+		 * This is what makes the neutralisation a process. {@code W} advances the band
+		 * only when the age gives it the turn, so the drop loses one value every
+		 * {@code ages} turns, and a drop that has just met water is five values away
+		 * from becoming water. The front of the dilution therefore advances one cell
+		 * every six hundred steps instead of one cell per step, which is what a puddle
+		 * needs to survive not one drop but the whole session.
+		 * </p>
+		 * <p>
+		 * They have to go after {@code ACID_END}, because a {@code C} in the centre
+		 * also matches the {@code c} of a spent drop: with the other order that drop
+		 * would wait for an age that can no longer change it and would never become
+		 * water. And they go after the corroding rules, so an acid that reaches the
+		 * wood at the bottom of a pond bites it instead of dissolving into the water
+		 * above.
+		 * </p>
+		 */
+
+		/** Water above eats the acid: the drop pays a value of its charge. */
+		private static final Step ACID_DILUTES_ABOVE_STEP = new Step(
+				new String[] {
+						"?A?",
+						"?C?",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/** Water below eats the acid: the drop pays a value of its charge. */
+		private static final Step ACID_DILUTES_BELOW_STEP = new Step(
+				new String[] {
+						"???",
+						"?C?",
+						"?A?" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/** Water at its left eats the acid: the drop pays a value of its charge. */
+		private static final Step ACID_DILUTES_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"AC?",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/** Water at its right eats the acid: the drop pays a value of its charge. */
+		private static final Step ACID_DILUTES_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"?CA",
+						"???" },
+				new String[] {
+						"???",
+						"?W?",
+						"???" });
+
+		/**
+		 * Acid with free space at both sides flows to one of them, exactly like the
+		 * water: the falling, the diagonal slide and the stacking are inherited from
+		 * the generic gravity, so levelling is the only liquidity the acid has to be
+		 * told.
+		 */
+		private static final Step ACID_FLOWS_BOTH_STEP = new Step(
+				new String[] {
+						"???",
+						"_C_",
+						"?X?" },
+				new String[] {
+						"???",
+						"x_x",
+						"???" });
+
+		/** Acid with free space only at its left flows there. */
+		private static final Step ACID_FLOWS_LEFT_STEP = new Step(
+				new String[] {
+						"???",
+						"_CX",
+						"?X?" },
+				new String[] {
+						"???",
+						"X_?",
+						"???" });
+
+		/** Acid with free space only at its right flows there. */
+		private static final Step ACID_FLOWS_RIGHT_STEP = new Step(
+				new String[] {
+						"???",
+						"XC_",
+						"?X?" },
+				new String[] {
+						"???",
+						"?_X",
+						"???" });
+
+		/**
+		 * A grain over acid changes place with the drop instead of resting on it.
+		 * <p>
+		 * The water holds a grain because the band of the drop is the wait of the
+		 * grain; the acid has no such band to spare, nor would it be right to spend
+		 * the acid on a grain of sand. So the grain does what its density says: it
+		 * goes down, and the drop it displaces leaves by the cell the grain vacated
+		 * or by a free side of it. One row per turn of the grain, the same as
+		 * falling in the air, which is what makes the acid a liquid the sand sinks
+		 * in and not a floor.
+		 * </p>
+		 */
+		private static final Step SAND_FALLS_THROUGH_ACID_STEP = new Step(
+				new String[] {
+						"???",
+						"?S?",
+						"?C?" },
+				new String[] {
+						"???",
+						"???",
+						"?P?" });
+
+		/**
 		 * Something below and no free diagonal (the bottom border counts as solid
 		 * too): the particle stacks on top of the pile.
 		 */
@@ -1285,6 +1879,19 @@ class MaterialRules {
 		 * with the one below, so a grain is never held for ever by a drop that has
 		 * already finished its wait.
 		 * </p>
+		 * <p>
+		 * The acid appears in two places. Its end goes at the top, with the quench,
+		 * because a spent drop has to become water before the generic gravity or any
+		 * of its own rules can move it. Everything else goes after the free fall, in
+		 * the order of the drop's life: it sinks through the water it finds below,
+		 * then bites the wood it lands on, then rolls to a diagonal when what it has
+		 * below is more acid, then slides to a side when what it has there is water
+		 * and it is sitting on that same acid, then lets itself be diluted, and only
+		 * then levels with the free slides like any other liquid. The sand that falls
+		 * through the acid goes with the other sinkings, because it is the same idea,
+		 * a grain changing place with the liquid instead of falling at it; and the
+		 * sand that lands on sand rolls like the acid, with the same three drawings.
+		 * </p>
 		 */
 		private static final Step[] STEPS = {
 				FIRE_DIES_UNDER_WATER_STEP,
@@ -1295,6 +1902,7 @@ class MaterialRules {
 				FIRE_DIES_UPPER_RIGHT_STEP,
 				FIRE_DIES_LOWER_LEFT_STEP,
 				FIRE_DIES_LOWER_RIGHT_STEP,
+				ACID_END_STEP,
 				FIRE_END_STEP,
 				SMOKE_END_STEP,
 				WOOD_END_STEP,
@@ -1316,7 +1924,30 @@ class MaterialRules {
 				WATER_FORGETS_THE_WAIT_STEP,
 				SAND_SINKS_SIDEWAYS_INTO_WATER_STEP,
 				SAND_SINKS_STRAIGHT_INTO_WATER_STEP,
+				SAND_ROLLS_SIDEWAYS_IN_WATER_STEP,
+				SAND_ROLLS_LEFT_IN_WATER_STEP,
+				SAND_ROLLS_RIGHT_IN_WATER_STEP,
+				SAND_FALLS_THROUGH_ACID_STEP,
 				FREE_FALL_STEP,
+				ACID_SINKS_SIDEWAYS_IN_WATER_STEP,
+				ACID_SINKS_IN_WATER_STEP,
+				ACID_CORRODES_BELOW_STEP,
+				ACID_CORRODES_ABOVE_STEP,
+				ACID_CORRODES_LEFT_STEP,
+				ACID_CORRODES_RIGHT_STEP,
+				ACID_ROLLS_SIDEWAYS_IN_WATER_STEP,
+				ACID_ROLLS_LEFT_IN_WATER_STEP,
+				ACID_ROLLS_RIGHT_IN_WATER_STEP,
+				ACID_LEVELS_SIDEWAYS_IN_WATER_STEP,
+				ACID_LEVELS_LEFT_IN_WATER_STEP,
+				ACID_LEVELS_RIGHT_IN_WATER_STEP,
+				ACID_DILUTES_ABOVE_STEP,
+				ACID_DILUTES_BELOW_STEP,
+				ACID_DILUTES_LEFT_STEP,
+				ACID_DILUTES_RIGHT_STEP,
+				ACID_FLOWS_BOTH_STEP,
+				ACID_FLOWS_LEFT_STEP,
+				ACID_FLOWS_RIGHT_STEP,
 				WATER_FLOWS_BOTH_STEP,
 				WATER_FLOWS_LEFT_STEP,
 				WATER_FLOWS_RIGHT_STEP,

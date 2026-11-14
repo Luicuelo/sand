@@ -34,7 +34,10 @@ import java.util.Map;
  * <ul>
  *   <li>Real-time particle physics simulation</li>
  *   <li>Interactive mouse controls for adding particles and applying forces</li>
- *   <li>A material selector, with one button and one key per material</li>
+ *   <li>A material selector, with one button and one key per material, and two
+ *       more brushes for the ones that are not materials: the one that paints
+ *       nothing, on its button or on escape, and the eraser, on its button or on
+ *       delete</li>
  *   <li>60 FPS animation loop</li>
  *   <li>Restart functionality</li>
  *   <li>Configurable window size via command-line parameters</li>
@@ -91,9 +94,10 @@ public class MaterialSimulator extends Application {
 		restartButton.setPrefHeight(BUTTON_HEIGHT);
 		restartButton.setFocusTraversable(false);
 
-		// One button per material, tinted with its own colour. The keys and the
-		// buttons share the map, so pressing "F" is the same as pressing the
-		// button of the fire, and both report the change to the renderer
+		// One button per material, tinted with its own colour, and the two brushes
+		// that are not materials at the end of the row. The keys and the buttons
+		// share the map, so pressing "F" is the same as pressing the button of the
+		// fire, and both report the change to the renderer
 		ToggleGroup materialButtons = new ToggleGroup();
 		Map<Character, ToggleButton> buttonsByGlyph = new HashMap<>();
 		HBox toolbar = new HBox(BUTTON_SPACING, restartButton);
@@ -101,7 +105,7 @@ public class MaterialSimulator extends Application {
 		toolbar.setPadding(new Insets(4, 8, 4, 8));
 		for (Material material : Material.LIST) {
 			ToggleButton button = new ToggleButton(String.valueOf(material.glyph));
-			button.setUserData(material);
+			button.setUserData(material.glyph);
 			button.setToggleGroup(materialButtons);
 			button.setPrefHeight(BUTTON_HEIGHT);
 			button.setFocusTraversable(false);
@@ -109,6 +113,11 @@ public class MaterialSimulator extends Application {
 			buttonsByGlyph.put(material.glyph, button);
 			toolbar.getChildren().add(button);
 		}
+		// Nothing at all, to move the mouse over the world without drawing, and the
+		// eraser, which empties the cells under it
+		ToggleButton nothingButton = brushButton(materialButtons, "None", WorldRenderer.NO_BRUSH);
+		ToggleButton eraserButton = brushButton(materialButtons, "Erase", WorldRenderer.ERASER);
+		toolbar.getChildren().addAll(nothingButton, eraserButton);
 		materialButtons.selectedToggleProperty().addListener((observable, previous, current) -> {
 			if (current == null) {
 				// Clicking the selected button would leave the brush without a
@@ -116,9 +125,9 @@ public class MaterialSimulator extends Application {
 				materialButtons.selectToggle(previous);
 				return;
 			}
-			Material material = (Material) current.getUserData();
-			renderer.selectMaterial(material.glyph);
-			primaryStage.setTitle(TITLE + " - " + material.glyph);
+			ToggleButton button = (ToggleButton) current;
+			renderer.selectBrush((Character) button.getUserData());
+			primaryStage.setTitle(TITLE + " - " + button.getText());
 		});
 		materialButtons.selectToggle(buttonsByGlyph.get(Material.LIST[0].glyph));
 
@@ -137,6 +146,18 @@ public class MaterialSimulator extends Application {
 				return;
 			if (e.getCode() == KeyCode.SPACE) {
 				renderer.setSpacePressed(true);
+				return;
+			}
+			// The two brushes that are not materials have a key each, and neither is a
+			// letter: escape for the one that paints nothing and delete for the eraser.
+			// Pressing the button is all there is to do, because the group reports the
+			// change to the renderer through the same listener as the materials
+			if (e.getCode() == KeyCode.ESCAPE) {
+				nothingButton.setSelected(true);
+				return;
+			}
+			if (e.getCode() == KeyCode.DELETE) {
+				eraserButton.setSelected(true);
 				return;
 			}
 			if (e.getCode().isLetterKey()) {
@@ -245,6 +266,23 @@ public class MaterialSimulator extends Application {
 		if (renderer != null) {
 			renderer.restart();
 		}
+	}
+
+	/**
+	 * Creates one of the two buttons of the toolbar that are not a material.
+	 *
+	 * @param group the group the buttons of the selector share
+	 * @param label the text of the button, which is also what the title shows
+	 * @param brush the glyph of the brush the button selects
+	 * @return the button, ready to be added to the toolbar
+	 */
+	private static ToggleButton brushButton(ToggleGroup group, String label, char brush) {
+		ToggleButton button = new ToggleButton(label);
+		button.setUserData(brush);
+		button.setToggleGroup(group);
+		button.setPrefHeight(BUTTON_HEIGHT);
+		button.setFocusTraversable(false);
+		return button;
 	}
 
 	/**
