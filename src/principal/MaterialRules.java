@@ -20,6 +20,8 @@ package principal;
  *       where there was nothing</li>
  *   <li>The slow sink of the sand: a drop of water with a grain on top of it
  *       holds it for a moment, and then the two swap places</li>
+ *   <li>The steam of a quench: a flame that touches water spends the drop and
+ *       leaves smoke in its place, whichever side the drop came from</li>
  *   <li>Hit forces, that move particles sideways</li>
  * </ul>
  * </p>
@@ -147,7 +149,8 @@ class MaterialRules {
 		if (dice < hitForce) {
 			Step step = hitDirection == RIGHT ? Pattern.PUSH_RIGHT_STEP : Pattern.PUSH_LEFT_STEP;
 			if (matches(step, x, y, cells)) {
-				applyPattern(step, x, y, cells, nextCells);
+				// Columns are read the way the hit pushes them
+				applyPattern(step, x, y, cells, nextCells, hitDirection == RIGHT, false);
 				return;
 			}
 		}
@@ -170,15 +173,21 @@ class MaterialRules {
 	 * </ul>
 	 * </p>
 	 * 
-	 * @param x         the x coordinate of the particle
-	 * @param y         the y coordinate of the particle
-	 * @param cells     the current cell data
-	 * @param nextCells the next cell data (to be updated)
+	 * @param x           the x coordinate of the particle
+	 * @param y           the y coordinate of the particle
+	 * @param cells       the current cell data
+	 * @param nextCells   the next cell data (to be updated)
+	 * @param rightToLeft true when the pass is reading each row from right to
+	 *                    left, which decides which neighbours have already had
+	 *                    their turn
+	 * @param aging       true when this turn also spends a value of the band, so
+	 *                    an age slower than the clock lets the particle move
+	 *                    without growing older
 	 */
-	public void stepParticle(int x, int y, int[][] cells, int[][] nextCells) {
+	public void stepParticle(int x, int y, int[][] cells, int[][] nextCells, boolean rightToLeft, boolean aging) {
 		for (Step step : Pattern.STEPS) {
 			if (matches(step, x, y, cells)) {
-				applyPattern(step, x, y, cells, nextCells);
+				applyPattern(step, x, y, cells, nextCells, rightToLeft, aging);
 				return;
 			}
 		}
@@ -208,8 +217,15 @@ class MaterialRules {
 	 *   <li>{@link Pattern#WRAPS}, {@link Pattern#CLAMPS}, {@link Pattern#BURNS}
 	 *       and {@link Pattern#FEEDS}: like a particle, but written with its value
 	 *       one step older, one step older without wrapping, half of the life it
-	 *       has left older, or half of the life it has spent younger</li>
-	 *   <li>a material glyph: a new particle of that material is created there</li>
+	 *       has left older, or half of the life it has spent younger. Only the
+	 *       age of {@code W} waits for the turn of {@link Material#isAgingDue}, so
+	 *       a short band can move in every turn and still last long; the burns
+	 *       and the feeds are events of the rule, not the pass of time, and do not
+	 *       wait</li>
+	 *   <li>a material glyph: a new particle of that material is created in the
+	 *       cell when it is free, or in the place of the particle that is
+	 *       already there when the cell belongs to a neighbour (see
+	 *       {@link #canHoldNewMaterial})</li>
 	 *   <li>{@link Pattern#SWAPS}: the particle and the one in this cell change
 	 *       places, both written here at once; the one in this cell only goes up
 	 *       when it has no way out to a side (see {@link #exchange})</li>
@@ -223,19 +239,31 @@ class MaterialRules {
 	 * leave a second copy in the cell it just left.
 	 * </p>
 	 * <p>
+	 * Writing a material in a cell that is not the cell of the particle is the
+	 * only way a rule takes the place of another particle, and it never creates
+	 * one nor loses one: the cell has to be holding the particle the match saw,
+	 * either because the sweep has not read it yet or because that particle is
+	 * still written there in the next generation. That is what lets a flame
+	 * leave smoke on the drop that puts it out, from any of the eight sides,
+	 * without touching the count of particles.
+	 * </p>
+	 * <p>
 	 * The particle itself is written once, when the pass is over, in the cell that
 	 * claimed it. When no glyph claimed it and its own cell was left empty, it
 	 * stays where it was; when the rule wrote something else in its cell, the
 	 * particle is consumed, which is how a material becomes another one.
 	 * </p>
 	 *
-	 * @param step      the rule being applied, its result is what gets written
-	 * @param x         the x coordinate of the particle
-	 * @param y         the y coordinate of the particle
-	 * @param cells     the current cell data
-	 * @param nextCells the next cell data (to be updated)
+	 * @param step        the rule being applied, its result is what gets written
+	 * @param x           the x coordinate of the particle
+	 * @param y           the y coordinate of the particle
+	 * @param cells       the current cell data
+	 * @param nextCells   the next cell data (to be updated)
+	 * @param rightToLeft true when the pass is reading the rows from right to left
+	 * @param aging       true when the turn also spends a value of the band
 	 */
-	private void applyPattern(Step step, int x, int y, int[][] cells, int[][] nextCells) {
+	private void applyPattern(Step step, int x, int y, int[][] cells, int[][] nextCells, boolean rightToLeft,
+			boolean aging) {
 		String[] result = step.result;
 		int particle = cells[y][x];
 
@@ -274,8 +302,12 @@ class MaterialRules {
 				case Material.ANY:
 					break;
 				case Material.EMPTY:
-					nextCells[ty][tx] = 0;
-					originWritten |= origin;
+					// The cell of the particle is always emptied; a neighbour only
+					// when its own particle is still written there
+					if (origin || stillHoldsTheSameParticle(tx, ty, cells, nextCells)) {
+						nextCells[ty][tx] = 0;
+						originWritten |= origin;
+					}
 					break;
 				case Material.PARTICLE:
 					claimed = true;
@@ -311,7 +343,7 @@ class MaterialRules {
 					claimed = true;
 					destinationX = tx;
 					destinationY = ty;
-					destinationValue = Material.advanceClamped(particle);
+					destinationValue = aging ? Material.advanceClamped(particle) : particle;
 					break;
 				case Pattern.BORN:
 					claimed = true;
@@ -342,9 +374,13 @@ class MaterialRules {
 					destinationValue = Material.feed(particle);
 					break;
 				default:
-					// A material glyph: the cell becomes a particle of that material
+					// A material glyph: the cell becomes a particle of that material.
+					// In the cell of the particle it needs free space; away from home
+					// it only takes the place of a particle that is already there
 					Material material = Material.byGlyph(glyph);
-					if (material != null && isFree(tx, ty, nextCells)) {
+					boolean writable = origin ? isFree(tx, ty, nextCells)
+							: canHoldNewMaterial(tx, ty, x, y, cells, nextCells, rightToLeft);
+					if (material != null && writable) {
 						nextCells[ty][tx] = material.spawn();
 						originWritten |= origin;
 					}
@@ -490,6 +526,83 @@ class MaterialRules {
 	}
 
 	/**
+	 * Checks whether a rule can put a new material in a cell that is not the cell
+	 * of the particle.
+	 * <p>
+	 * The cells the pass has not read yet still hold the particle the match saw,
+	 * and writing the material there is what makes them skip their turn, exactly
+	 * like a swap does. That is safe in any of them, whether they are below the
+	 * particle or at its side: the rows are read from top to bottom, and the row
+	 * of the particle is read in one direction or the other depending on the
+	 * frame, so the pass has to be told which side it has already left behind
+	 * (see {@link #readYet}). A cell it has already read only takes the material
+	 * when its own particle is still written there in the next generation: if it
+	 * moved away, or if somebody else took the cell, the rule writes nothing.
+	 * </p>
+	 *
+	 * @param x           column of the cell the rule writes
+	 * @param y           row of the cell the rule writes
+	 * @param particleX   column of the particle being stepped
+	 * @param particleY   row of the particle being stepped
+	 * @param cells       the current cell data
+	 * @param nextCells   the next cell data
+	 * @param rightToLeft true when the pass is reading the rows from right to left
+	 * @return true when the material glyph can write in that cell
+	 */
+	private boolean canHoldNewMaterial(int x, int y, int particleX, int particleY, int[][] cells, int[][] nextCells,
+			boolean rightToLeft) {
+		if (!readYet(x, y, particleX, particleY, rightToLeft))
+			return isFree(x, y, nextCells) && cells[y][x] != 0;
+		return stillHoldsTheSameParticle(x, y, cells, nextCells);
+	}
+
+	/**
+	 * Checks whether the pass has already had its turn in a cell of this step.
+	 * <p>
+	 * The rows are always read from top to bottom; inside a row the direction
+	 * depends on the frame and it swaps every frame, so that no particle is
+	 * always the first to write. A cell the pass has not reached yet is still
+	 * free in the next generation and can be taken by the rule of a particle that
+	 * is being read before it.
+	 * </p>
+	 *
+	 * @param x           column of the cell to check
+	 * @param y           row of the cell to check
+	 * @param particleX   column of the particle being stepped
+	 * @param particleY   row of the particle being stepped
+	 * @param rightToLeft true when the pass is reading the rows from right to left
+	 * @return true when the pass has already been in that cell
+	 */
+	private static boolean readYet(int x, int y, int particleX, int particleY, boolean rightToLeft) {
+		if (y != particleY)
+			return y < particleY;
+		return rightToLeft ? x > particleX : x < particleX;
+	}
+
+	/**
+	 * Checks whether a cell the sweep has already read still holds the particle
+	 * the match saw.
+	 * <p>
+	 * The comparison is by material and not by value, because the particle may
+	 * have written itself with another value of its band in this same step,
+	 * which is what {@code V}, {@code W}, {@code r}, {@code l} and {@code B} do.
+	 * A cell left free by its particle and a cell taken by a particle of another
+	 * material both fail, so a rule that replaces never creates one and never
+	 * destroys anybody.
+	 * </p>
+	 *
+	 * @param x         column of the cell
+	 * @param y         row of the cell
+	 * @param cells     the current cell data
+	 * @param nextCells the next cell data
+	 * @return true when the cell still holds a particle of the same material
+	 */
+	private static boolean stillHoldsTheSameParticle(int x, int y, int[][] cells, int[][] nextCells) {
+		int there = nextCells[y][x];
+		return there != 0 && Material.glyphOf[there] == Material.glyphOf[cells[y][x]];
+	}
+
+	/**
 	 * A step rule: the drawing of the neighbourhood that triggers it and the
 	 * drawing of what that neighbourhood becomes.
 	 * <p>
@@ -584,7 +697,9 @@ class MaterialRules {
 	 *   <li>{@link #SWAPS} and {@link #SHARED_SWAPS}: the particle and the one in
 	 *       that cell change places, both written at once; the one in that cell
 	 *       only goes up when it has no free side to leave by</li>
-	 *   <li>a material glyph: a new particle of that material</li>
+	 *   <li>a material glyph: a new particle of that material, either in the free
+	 *       space of its cell or in the place of a particle the pass has not read
+	 *       yet, or whose particle is still written there, at any side of it</li>
 	 * </ul>
 	 * The centre of a drawing is its middle character, so in a match it is the
 	 * particle being evaluated and in a result the cell that particle leaves.
@@ -647,18 +762,29 @@ class MaterialRules {
 		 * fire: a particle always writes itself at the end of its own step, so the
 		 * flame is the only one that can decide not to come back.
 		 * </p>
+		 * <p>
+		 * In all eight the drop is spent as well: the smoke takes its place, which
+		 * is the steam of the quench. One drop becomes one puff wherever it touched
+		 * the flame, so the drop is never lost for nothing and the count of water
+		 * plus smoke around a flame does not move. The write is safe in a cell the
+		 * pass has not read yet, and in a cell it has already read the drop has
+		 * written itself there, so the smoke replaces it and is not invented; a drop
+		 * that flowed away in this very step is not spent.
+		 * </p>
 		 */
+
+		/** Water above puts the flame out and leaves steam in the place of the drop. */
 		private static final Step FIRE_DIES_UNDER_WATER_STEP = new Step(
 				new String[] {
 						"?A?",
 						"?F?",
 						"???" },
 				new String[] {
-						"???",
+						"?H?",
 						"?_?",
 						"???" });
 
-		/** Water below puts the flame out. */
+		/** Water below puts the flame out and leaves steam in the place of the drop. */
 		private static final Step FIRE_DIES_OVER_WATER_STEP = new Step(
 				new String[] {
 						"???",
@@ -667,9 +793,9 @@ class MaterialRules {
 				new String[] {
 						"???",
 						"?_?",
-						"???" });
+						"?H?" });
 
-		/** Water at its left puts the flame out. */
+		/** Water at its left puts the flame out and leaves steam in its place. */
 		private static final Step FIRE_DIES_LEFT_STEP = new Step(
 				new String[] {
 						"???",
@@ -677,10 +803,10 @@ class MaterialRules {
 						"???" },
 				new String[] {
 						"???",
-						"?_?",
+						"H_?",
 						"???" });
 
-		/** Water at its right puts the flame out. */
+		/** Water at its right puts the flame out and leaves steam in its place. */
 		private static final Step FIRE_DIES_RIGHT_STEP = new Step(
 				new String[] {
 						"???",
@@ -688,32 +814,32 @@ class MaterialRules {
 						"???" },
 				new String[] {
 						"???",
-						"?_?",
+						"?_H",
 						"???" });
 
-		/** Water at the upper left puts the flame out. */
+		/** Water at the upper left puts the flame out and leaves steam there. */
 		private static final Step FIRE_DIES_UPPER_LEFT_STEP = new Step(
 				new String[] {
 						"A??",
 						"?F?",
 						"???" },
 				new String[] {
-						"???",
+						"H??",
 						"?_?",
 						"???" });
 
-		/** Water at the upper right puts the flame out. */
+		/** Water at the upper right puts the flame out and leaves steam there. */
 		private static final Step FIRE_DIES_UPPER_RIGHT_STEP = new Step(
 				new String[] {
 						"??A",
 						"?F?",
 						"???" },
 				new String[] {
-						"???",
+						"??H",
 						"?_?",
 						"???" });
 
-		/** Water at the lower left puts the flame out. */
+		/** Water at the lower left puts the flame out and leaves steam there. */
 		private static final Step FIRE_DIES_LOWER_LEFT_STEP = new Step(
 				new String[] {
 						"???",
@@ -722,9 +848,9 @@ class MaterialRules {
 				new String[] {
 						"???",
 						"?_?",
-						"???" });
+						"H??" });
 
-		/** Water at the lower right puts the flame out. */
+		/** Water at the lower right puts the flame out and leaves steam there. */
 		private static final Step FIRE_DIES_LOWER_RIGHT_STEP = new Step(
 				new String[] {
 						"???",
@@ -733,7 +859,7 @@ class MaterialRules {
 				new String[] {
 						"???",
 						"?_?",
-						"???" });
+						"??H" });
 
 		/**
 		 * Fire that has spent its life becomes smoke. Nothing disappears on its
@@ -808,6 +934,28 @@ class MaterialRules {
 						"???",
 						"?F?",
 						"?M?" },
+				new String[] {
+						"???",
+						"?l?",
+						"???" });
+
+		/**
+		 * Fire with wood above feeds on it as well: the fuel it has to eat can be on
+		 * either side of the flame, so a log lit from below burns up as evenly as one
+		 * lit from above.
+		 * <p>
+		 * Without this drawing a flame under a log could only grow old: it cannot
+		 * rise, because the wood is over it, and it has nothing to eat, so it spends
+		 * its life where it is and turns into smoke before the wood above it has
+		 * finished burning. The fuel of a fire is the fuel it can reach, and from
+		 * below the flame reaches it just the same.
+		 * </p>
+		 */
+		private static final Step FIRE_FEEDS_ABOVE_STEP = new Step(
+				new String[] {
+						"?M?",
+						"?F?",
+						"???" },
 				new String[] {
 						"???",
 						"?l?",
@@ -1000,15 +1148,22 @@ class MaterialRules {
 						"??X" });
 
 		/**
-		 * Water with fire above jumps into the cell the flame leaves: the drop
-		 * follows the fire it has just put out instead of letting a hole open
-		 * over it.
+		 * Water with a flame just above it puts the flame out at once, without
+		 * waiting for the turn of the flame's clock: the steam is written in its own
+		 * cell and the cell of the flame is left empty.
 		 * <p>
-		 * Only upwards, and only these three drawings, because the flame above is
-		 * stepped first: it is already gone when the water is looked at, so the
-		 * cell is free and nothing can be written over the drop. The rest of the
-		 * holes need no rule, they are below or at the side and the water fills
-		 * them falling and flowing like it fills any other.
+		 * It is the same result the flame writes when its own turn comes (see the
+		 * {@code FIRE_DIES} rules), so the two never fight over the cells: whichever
+		 * of them is stepped first, the drop ends up as one puff and the flame is
+		 * gone. The cell of the flame is only emptied when the flame is still written
+		 * there in the next generation, so a flame that has already flown away, or
+		 * one whose cell was taken by another particle, is not touched.
+		 * </p>
+		 * <p>
+		 * Only upwards, and only these three drawings, because the row of the flame
+		 * is read before the row of the drop: from below the drop has the flame's
+		 * cell still ahead of it. A drop above the flame cannot do this, and there
+		 * the flame puts itself out when its own turn comes.
 		 * </p>
 		 */
 		private static final Step WATER_PUTS_OUT_ABOVE_STEP = new Step(
@@ -1017,30 +1172,30 @@ class MaterialRules {
 						"?A?",
 						"???" },
 				new String[] {
-						"?X?",
 						"?_?",
+						"?H?",
 						"???" });
 
-		/** Water with fire at the upper left jumps into the cell of the flame. */
+		/** Water with the flame at the upper left squeezes it out and leaves steam. */
 		private static final Step WATER_PUTS_OUT_UPPER_LEFT_STEP = new Step(
 				new String[] {
 						"F??",
 						"?A?",
 						"???" },
 				new String[] {
-						"X??",
-						"?_?",
+						"_??",
+						"?H?",
 						"???" });
 
-		/** Water with fire at the upper right jumps into the cell of the flame. */
+		/** Water with the flame at the upper right squeezes it out and leaves steam. */
 		private static final Step WATER_PUTS_OUT_UPPER_RIGHT_STEP = new Step(
 				new String[] {
 						"??F",
 						"?A?",
 						"???" },
 				new String[] {
-						"??X",
-						"?_?",
+						"??_",
+						"?H?",
 						"???" });
 
 		/**
@@ -1148,6 +1303,7 @@ class MaterialRules {
 				WOOD_BURNS_LEFT_STEP,
 				WOOD_BURNS_RIGHT_STEP,
 				FIRE_FEEDS_STEP,
+				FIRE_FEEDS_ABOVE_STEP,
 				WOOD_STAYS_STEP,
 				FIRE_RISES_STEP,
 				FIRE_SPREADS_STEP,

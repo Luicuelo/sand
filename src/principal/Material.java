@@ -48,23 +48,33 @@ class Material {
 	 * Materials in the order of their bands, which are laid out from index 1.
 	 * <p>
 	 * The size of a band is the number of values the material owns, and for a
-	 * material with life it is also how long it lasts: one value per step. The
+	 * material with life it is also how long it lasts: one value per turn,
+	 * unless the age is slower than the clock, which is the number after it. The
 	 * spread is how many values, counted from the first of the band, a new
 	 * particle may take: the wider it is, the less the grains look like a flat
 	 * sheet, and the more life a particle of a material with life loses at
-	 * birth. The number after the spread is the clock: how many steps of the
-	 * world pass between two evaluations of one particle. The colours are the
-	 * stops the band is interpolated through.
+	 * birth. The clock is how many steps of the world pass between two
+	 * evaluations of one particle, and the age how many of those turns one value
+	 * of the band takes to be spent. The colours are the stops the band is
+	 * interpolated through.
 	 * </p>
 	 * <p>
 	 * The clock is what makes the difference between a grain and a drop: the
 	 * sand is looked at one step in twelve and the water in every one, so the
 	 * water falls twelve times faster and reaches the bottom of the screen
-	 * first. The materials with life stay at nine, so their lives are still
-	 * counted in steps and the fire still climbs a third of the screen, at the
-	 * pace it had before the world was sped up. The turns of a material fall one
-	 * every clock steps, so an even quotient between its clock and the steps per
-	 * frame would keep every one of them on the same side of the sweep.
+	 * first. The wood and the fire share a clock of twenty-two, so a flame
+	 * climbs one row for every value the wood spends and the burn front stays
+	 * together. The turns of a material fall one every clock steps, so an even
+	 * quotient between its clock and the steps per frame would keep every one of
+	 * them on the same side of the sweep.
+	 * </p>
+	 * <p>
+	 * An age slower than the clock is what lets a short band climb: the particle
+	 * still moves on every turn, but it only spends a value of its band once
+	 * every {@code ages} turns, so a band of eight values with an age of thirteen
+	 * crosses seventy-nine rows before it runs out, which is the whole height of
+	 * the world. The life of a material is its size times its age, counted in
+	 * turns, and its reach is the same number counted in rows.
 	 * </p>
 	 * <p>
 	 * The band of the water is also the wait of a grain on top of it: a drop
@@ -79,15 +89,15 @@ class Material {
 	 * </p>
 	 */
 	static final Material[] LIST = {
-			new Material('S', 25, false, 25, 12, "#f7e8a4", "#e6cd66", "#b39a3a"),
+			new Material('S', 10, false, 10, 12, 1, "#f7e8a4", "#e6cd66", "#b39a3a"),
 			// The first eight values are the shades a drop can be born with, and the
 			// first segment of the ramp ends right there; the stops that follow are
 			// the same colour, so the wait of a grain does not show
-			new Material('A', 57, false, 8, 1, "#5fa8d8", "#79c1e9", "#79c1e9", "#79c1e9", "#79c1e9", "#79c1e9",
+			new Material('A', 57, false, 8, 1, 1, "#5fa8d8", "#79c1e9", "#79c1e9", "#79c1e9", "#79c1e9", "#79c1e9",
 					"#79c1e9", "#79c1e9"),
-			new Material('M', 30, true, 9, 9, "#d8b478", "#a1713c", "#5d3d20"),
-			new Material('F', 30, true, 6, 9, "#fff6b0", "#ffb020", "#cc2a08"),
-			new Material('H', 80, true, 6, 9, "#8c8c8c", "#bdbdbd", "#e2e2e2") };
+			new Material('M', 16, true, 4, 22, 1, "#d8b478", "#a1713c", "#5d3d20"),
+			new Material('F', 10, true, 3, 22, 3, "#fff6b0", "#ffb020", "#cc2a08"),
+			new Material('H', 8, true, 2, 9, 13, "#8c8c8c", "#bdbdbd", "#e2e2e2") };
 
 	/** Glyph of the material that owns each palette value (0: empty). */
 	static final char[] glyphOf = new char[PALETTE_SIZE];
@@ -98,13 +108,21 @@ class Material {
 	 */
 	private static final int[] stepPeriodOf = new int[PALETTE_SIZE];
 
+	/**
+	 * Turns one value of the band of the material that owns each palette value
+	 * takes to be spent. Empty cells get 1, so a step never divides by zero.
+	 */
+	private static final int[] agesOf = new int[PALETTE_SIZE];
+
 	static {
 		glyphOf[0] = EMPTY;
 		stepPeriodOf[0] = 1;
+		agesOf[0] = 1;
 		for (Material material : LIST)
 			for (int value = material.first; value <= material.last(); value++) {
 				glyphOf[value] = material.glyph;
 				stepPeriodOf[value] = material.stepPeriod;
+				agesOf[value] = material.ages;
 			}
 		if (next > PALETTE_SIZE - 1)
 			throw new IllegalStateException("The material bands need " + (next - 1) + " values and the palette has "
@@ -123,17 +141,25 @@ class Material {
 	 * particles.
 	 */
 	final int stepPeriod;
+	/**
+	 * Turns of the clock that a value of the band takes to be spent. One means
+	 * the band ages in every turn, which is a life counted in turns equal to its
+	 * size; more means the particle keeps moving while its age stands still, so
+	 * the same band lasts longer and reaches further.
+	 */
+	final int ages;
 	/** Colours the band is interpolated through. */
 	final Color[] stops;
 	/** First palette value of the band. */
 	final int first;
 
-	private Material(char glyph, int size, boolean life, int spread, int stepPeriod, String... stops) {
+	private Material(char glyph, int size, boolean life, int spread, int stepPeriod, int ages, String... stops) {
 		this.glyph = glyph;
 		this.size = size;
 		this.life = life;
 		this.spread = Math.max(1, Math.min(spread, size));
 		this.stepPeriod = Math.max(1, stepPeriod);
+		this.ages = Math.max(1, ages);
 		this.stops = new Color[stops.length];
 		for (int i = 0; i < stops.length; i++)
 			this.stops[i] = Color.web(stops[i]);
@@ -223,6 +249,23 @@ class Material {
 	 */
 	static boolean isDue(int value, int step) {
 		return step % stepPeriodOf[value] == 0;
+	}
+
+	/**
+	 * Whether the turn of the particle also spends a value of its band.
+	 * <p>
+	 * A material ages in one turn of every {@link #ages}, counted from the start
+	 * of the world, so a short band can last long: the particle still moves in
+	 * every turn, and only its age stands still in between. This is what lets a
+	 * band of eight values climb seventy-seven rows.
+	 * </p>
+	 *
+	 * @param value the palette value of a particle
+	 * @param step  the step of the world, counted from the start
+	 * @return true when the age of the particle moves in this turn
+	 */
+	static boolean isAgingDue(int value, int step) {
+		return (step / stepPeriodOf[value]) % agesOf[value] == 0;
 	}
 
 	/**

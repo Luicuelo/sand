@@ -104,13 +104,14 @@ cuenta **fotogramas** y lo dividen el golpe y el pintado; `stepCounter` cuenta
 **pasos del mundo** y lo dividen los materiales y el pincel. Con el multiplicador
 en 9 hay nueve pasos por fotograma, es decir, 540 pasos por segundo.
 
-Cada material guarda cada cuántos pasos da uno de los suyos: es el número que va
-después del `spread` en `Material.LIST`. El agua va con 1 y da un paso en todos los
-pasos (540 por segundo); la arena va con 12 y da uno de cada doce (45 por segundo),
-así que cae y se abre a un doceavo de la velocidad del agua. La madera, el fuego y
-el humo van con 9 porque sus vidas están medidas en pasos: dan 60 por segundo, uno
-por fotograma, y su banda sigue contando filas, porque cada turno que dan es una
-fila que suben o un paso de vida que gastan.
+Cada material guarda cada cuántos pasos da uno de los suyos y cuántos de esos
+turnos tarda en gastar un valor de su banda. El primer número es el **reloj** y va
+después del `spread` en `Material.LIST`; el segundo es la **vejez** y va justo
+detrás. El agua va con reloj 1 y da un paso en todos los pasos (540 por segundo);
+la arena va con 12 y da uno de cada doce (45 por segundo), así que cae y se abre a
+un doceavo de la velocidad del agua. La madera y el fuego van con 22, para que una
+llama suba una fila por cada valor que gasta la madera y el frente de combustión no
+se despegue, y el humo con 9, que es una vez por fotograma.
 
 La partícula que no tiene el turno **no se omite del todo**: su celda se copia al
 búfer siguiente. No es un extra, es obligatorio, porque el barrido escribe en el
@@ -120,8 +121,9 @@ color y su vida hasta que le vuelva a tocar.
 **El pincel usa el mismo reloj, al doble.** `dropUnderMouse()` se llama dentro del
 paso y suelta un grano cada **dos** turnos del material seleccionado
 (`stepCounter % (stepPeriod * 2)`): uno cada veinticuatro pasos para la arena (una
-vez cada dos fotogramas y dos tercios) y uno cada dos para el agua (cuatro y medio
-por fotograma). Dos turnos y no uno porque un grano caído en el mismo turno en que
+vez cada dos fotogramas y dos tercios), uno cada dos para el agua (cuatro y medio
+por fotograma), uno cada cuarenta y cuatro para la madera y el fuego y uno cada
+dieciocho para el humo. Dos turnos y no uno porque un grano caído en el mismo turno en que
 nace aparece en la celda que el anterior acaba de dejar, y el `match` mira la
 generación anterior:
 todavía lo ve ahí, no cae y se desliza en diagonal. Con un turno de hueco en medio
@@ -136,9 +138,11 @@ cuentan en pasos y el sentido se cambia por fotograma, lo que hay que mirar es e
 qué fotogramas caen sus turnos: la arena da uno cada 12 pasos y un fotograma tiene
 9, así que sus turnos caen en los fotogramas 0, 1, 2, 4, 5, 6, 8, 9… y ven los dos
 sentidos. Los materiales más rápidos que el fotograma (el agua, con 1) se evalúan
-varias veces por fotograma y acaban viendo los dos sentidos de todas formas. La
-madera, el fuego y el humo, con 9, caen una vez por fotograma, en el primer paso de
-cada uno, y también los ven. Si el cociente `reloj / multiplicador` fuera entero y
+varias veces por fotograma y acaban viendo los dos sentidos de todas formas. El
+humo, con 9, cae una vez por fotograma, en el primer paso de cada uno, y también los
+ve. La madera y el fuego, con 22, caen en los pasos 0, 22, 44, 66…, es decir en los
+fotogramas 0, 2, 4, 7, 9, 11, 13, 16…: el cociente 22 / 9 = 2,44 tampoco es entero y
+alterna. Si el cociente `reloj / multiplicador` fuera entero y
 par, todos los turnos caerían del mismo lado: medido con la arena en 12 y el
 multiplicador en 2 (cociente 6), el bloque se iba 5,4 celdas a un lado y se
 aplanaba (13 de alto y 42 de ancho, frente a 17 y 37). Hoy 12 / 9 no es entero
@@ -166,7 +170,7 @@ aplanaba (13 de alto y 42 de ancho, frente a 17 y 37). Hoy 12 / 9 no es entero
 | Valor | Significado |
 |---|---|
 | `0` | vacío (se dibuja blanco) |
-| `1` a `222` | un material, con su vida |
+| `1` a `101` | un material, con su vida |
 | resto | sin uso |
 
 Que el material y la vida sean **el mismo número** es la decisión central del
@@ -180,17 +184,17 @@ todo el motor. Por eso las bandas empiezan en 1 (y la idea original de "arena de
 
 `Material.glyphOf[256]` es la tabla inversa (valor → glifo) que consulta el
 `match`: es lo que permite escribir `F` en un patrón y que coincida con
-cualquiera de los 30 valores del fuego.
+cualquiera de los 10 valores del fuego.
 
 ### Los materiales
 
-| Glifo | Material | Valores | Vida | Nace en | Reloj | Rampa |
-|---|---|---|---|---|---|---|
-| `S` | arena | 1-25 | no | 1-25 | 12 | amarillo pálido → ocre dorado |
-| `A` | agua | 26-82 | no (la cola de la banda es la espera) | 26-33 | 1 | azul medio → azul claro, y la espera plana |
-| `M` | madera | 83-112 | sí (30 pasos) | 83-91 | 9 | madera clara → madera oscura |
-| `F` | fuego | 113-142 | sí (30 pasos) | 113-118 | 9 | amarillo pálido → naranja → rojo |
-| `H` | humo | 143-222 | sí (80 pasos) | 143-148 | 9 | gris oscuro → gris claro |
+| Glifo | Material | Valores | Vida | Nace en | Reloj | Vejez | Rampa |
+|---|---|---|---|---|---|---|---|
+| `S` | arena | 1-10 | no | 1-10 | 12 | 1 | amarillo pálido → ocre dorado |
+| `A` | agua | 11-67 | no (la cola de la banda es la espera) | 11-18 | 1 | 1 | azul medio → azul claro, y la espera plana |
+| `M` | madera | 68-83 | sí (16 turnos, 352 pasos) | 68-71 | 22 | 1 | madera clara → madera oscura |
+| `F` | fuego | 84-93 | sí (30 turnos, 30 filas) | 84-86 | 22 | 3 | amarillo pálido → naranja → rojo |
+| `H` | humo | 94-101 | sí (79 turnos, 75 filas) | 94-95 | 9 | 13 | gris oscuro → gris claro |
 
 Las bandas se asignan solas en el orden de la lista, desde 1. Añadir un material
 es añadir una línea; los valores se recalculan.
@@ -207,13 +211,22 @@ llegar al final, que son más de cuatro turnos del grano (48) y menos de cinco
 (60), así que todo grano se hunde en su quinto turno y una fila cuesta siempre 60
 pasos del mundo: 6,7 fotogramas con el multiplicador en 9.
 
-El ancho de cada banda no es decorativo: **es la vida**, y subir cuesta un paso
-por fila. El lienzo por defecto mide 75 filas, así que el fuego, que se apaga a
-un tercio de pantalla, se queda con 30 pasos; el humo, que es lo que tiene que
-subir hasta el techo, necesita 80 (75 filas más el margen del nacimiento). La
-madera se queda con 30 porque su vida es lo que tarda en arder, no lo que sube.
-El reloj no cambia esa cuenta: el fuego y el humo llevan reloj 9, así que dan un
-paso cada nueve pasos del mundo y sus 30 u 80 turnos siguen siendo 30 u 80 filas.
+El ancho de cada banda no es decorativo, pero **tampoco es la vida**: la vida son
+los turnos, y un turno cuesta una fila. Lo que convierte valores en turnos es la
+**vejez** (`ages`): cuántos turnos tarda en gastarse un valor de la banda. Así, la
+vida de un material es su ancho por su vejez, en turnos, y la altura que alcanza es
+esa misma cifra en filas. Por eso el humo llega a las 75 filas del lienzo con 8
+valores: gasta un valor cada 13 turnos y sube una fila por turno. El fuego, que se
+apaga a un tercio de pantalla, necesita 30 turnos y los saca de 10 valores con vejez
+3. La madera no sube: sus 16 valores con vejez 1 y reloj 22 son 352 pasos de
+combustión.
+
+La vejez no toca la velocidad: el humo sigue subiendo una fila por turno y su reloj
+sigue siendo 9. Lo que cambia es cada cuánto pierde un tono, y eso se ve en el
+fantasma del último valor: dura lo que dura un escalón, así que el humo es casi
+blanco los últimos 13 de sus 79 turnos. Cuanto más corta la banda, más pesa el
+fantasma, y por eso la vejez no se puede subir sin mirar la pantalla.
+
 La arena, en cambio, con reloj 12 baja una fila cada doce pasos, es decir, una
 cada fotograma y un tercio con el multiplicador en 9.
 
@@ -228,7 +241,7 @@ esta sección):
 | Glifo | Efecto | Para qué |
 |---|---|---|
 | `V` | +1, y al llegar al final vuelve al **primer** valor | Ciclos sin fin, siempre con el mismo tono de arranque |
-| `W` | +1, y al llegar al final **se queda ahí** | Envejecer hasta morir |
+| `W` | +1, y al llegar al final **se queda ahí** | Envejecer hasta morir; sólo avanza cuando la vejez le da el turno |
 | `r` | Se salta a la mitad de la vida que le **queda** | Quemar deprisa |
 | `l` | Retrocede a la mitad de la vida que ya **gastó** | Rejuvenecer / alimentar |
 | `B` | La partícula con un valor **sorteado** entre los primeros de su banda | Volver a empezar sin que todo acabe del mismo color. Hoy ninguna regla lo usa: el cambio de sitio mueve el valor que la partícula ya tenía (§7.4) |
@@ -239,6 +252,13 @@ material, aunque lo parezca: igual que `X`, `V` y `W`, es una orden de escritura
 Su diferencia con una letra de material es la de siempre: una letra **crea** una
 partícula nueva y deja sin reclamar la que se estaba moviendo, que al final del
 paso se escribe en su propia celda (§7.2, salida 5).
+
+`W` es el único de los cinco que **espera a la vejez** (`Material.isAgingDue`): en
+los turnos en que no le toca, escribe la partícula con el valor que ya tenía. Eso es
+lo que deja que un material se mueva en todos los turnos y envejezca en uno de cada
+trece, y por eso una banda de 8 valores puede subir las 75 filas del lienzo. `r` y
+`l` no esperan: son sucesos de la regla —quemar, alimentar— y no el paso del
+tiempo.
 
 Detalles que no son obvios:
 
@@ -251,24 +271,27 @@ Detalles que no son obvios:
 - **El último valor de un material con vida se pinta casi blanco** (85 % hacia
   blanco, en `WorldRenderer.Palette`). Es un **fantasma**: el material sigue ahí,
   invisible, esperando la regla que lo transforme. Por eso la madera parece
-  desaparecer justo antes de arder.
+  desaparecer justo antes de arder. Dura lo que dura un escalón de la banda: un
+  turno si la vejez es 1, y trece si es 13.
 - Ningún material nace con un valor fijo: `spawn()` sortea entre los primeros
   valores de su banda (`spread`), para que un montón no sea una plancha de un
   solo color. Sin vida eso solo cambia el tono. Con vida el valor **es** la edad,
   así que el sorteo es también vida gastada al nacer, y por eso el margen se
-  queda corto y distinto en cada material: la madera sortea entre 9 valores de 30
-  (y por eso arde un poco antes), el fuego entre 6 de 30, y el humo entre 6 de 80,
-  que es justo lo que se puede gastar sin dejar de llegar al techo.
+  queda corto y distinto en cada material: la madera sortea entre 4 valores de 16
+  (y por eso arde un poco antes), el fuego entre 3 de 10, y el humo entre 2 de 8,
+  que es justo lo que se puede gastar sin dejar de llegar al techo. Cuanto más
+  corta la banda, más pesa el sorteo: con 8 valores, sortear 6 dejaría humo de 26
+  filas al lado de humo de 79.
 
 ### La cadena completa de una pared de madera
 
 ```
-madera  M (46..75)  --W-->  m (75, fantasma)
-                            --WOOD_END-->  F (76, fuego nuevo)
-                                           --W-->  f (105, fantasma)
-                                                  --FIRE_END-->  H (humo, 106)
-                                                                 --W-->  h (185, fantasma)
-                                                                        --SMOKE_END-->  vacío
+madera  M (68..83)  --W-->  m (83, fantasma)
+                            --WOOD_END-->  F (84, fuego nuevo)
+                                           --W x3-->  f (93, fantasma)
+                                                      --FIRE_END-->  H (94, humo)
+                                                                     --W x13-->  h (101, fantasma)
+                                                                                 --SMOKE_END-->  vacío
 ```
 
 Cada flecha es una regla de la tabla. Ninguna transición está escondida en el
@@ -299,7 +322,7 @@ orden de escritura en el `result`**.
 | `?` | nada (deja la celda como esté) |
 | `_` | vacío |
 | `X` | la partícula, con su valor exacto |
-| `S` `A` `M` `F` `H` | una partícula **nueva** de ese material, con `spawn()` |
+| `S` `A` `M` `F` `H` | una partícula **nueva** de ese material, con `spawn()`, en la celda libre o en el sitio de una partícula que ya está ahí (§7.5) |
 | `x` | la partícula, sorteada entre todas las `x` del resultado |
 | `o` | una partícula **nueva** con una parte de la vida que le queda a la partícula |
 | `V` `W` `r` `l` | la partícula, con su vida avanzada o retrocedida |
@@ -397,6 +420,10 @@ Las escribe la que llegue primero en el barrido; la segunda se encuentra la celd
 ocupada y vuelve a su sitio (salida 2). Por eso el sentido del barrido se
 alterna: para que "llegar primero" no signifique siempre lo mismo.
 
+Y desde que una regla puede escribir en la celda de un vecino (§7.5), el sentido
+no sólo decide quién gana: `stepParticle` lo recibe (`rightToLeft`) para saber
+qué celdas de su propia fila ya ha leído.
+
 ### 7.4 El cambio de sitio
 
 `P` y `p` escriben **las dos celdas** del cambio, no solo la suya, cuando el
@@ -414,10 +441,11 @@ barrido lee la partícula que lo pide:
 
 El punto 2 no necesita nada más, y ahí está la gracia: **una partícula solo se
 escribe donde no había nada** (todas las escrituras van con `isFree`, salvo la de
-la propia celda), así que en las celdas que el barrido todavía no ha leído
-`nextCells` está vacía. Si al llegar a una celda hay algo, o estaba vacía en
-`cells` —y entonces su turno no hacía nada— o lo escribió una regla que llegó
-antes: una partícula que cayó dentro o un cambio, que ya escribió las dos mitades.
+la propia celda y la letra de material que sustituye a la partícula del `match`,
+§7.5), así que en las celdas que el barrido todavía no ha leído `nextCells` está
+vacía. Si al llegar a una celda hay algo, o estaba vacía en `cells` —y entonces
+su turno no hacía nada— o lo escribió una regla que llegó antes: una partícula
+que cayó dentro o un cambio, que ya escribió las dos mitades.
 
 Antes eso no se podía saber, así que el cambio se **anotaba**: un array
 `exchanges` guardaba las coordenadas del que lo empezaba, y la celda de la gota lo
@@ -446,6 +474,35 @@ Y la gota sube con el valor que ya tenía: el cambio mueve el valor de `cells`, 
 lo dibuja, así que el pozo conserva la variedad de tonos sin que ninguna regla
 tenga que sortear una sombra nueva.
 
+### 7.5 La letra de material fuera de su celda
+
+Una letra de material (`H`, `A`, `m`…) fuera de la celda de la partícula **no
+crea nada: toma el sitio de una partícula que ya está ahí**. Puede ser cualquier
+celda del dibujo, también una de su propia fila, y lo que se comprueba depende de
+si el barrido ya pasó por ella. Eso lo dice `readYet`, que para la propia fila
+necesita el sentido del barrido (`rightToLeft`, §7.3):
+
+- **Celda que el barrido ya leyó** (toda la fila de arriba, y de su fila la parte
+  por la que ya ha pasado): se mira `nextCells`. Sólo se escribe si su partícula
+  sigue ahí. Se compara por **material** y no por valor, porque la partícula pudo
+  escribirse a sí misma con otro tono de su banda (`W`, `r`, `l`, `B`). Si se
+  escurrió, o si la ocupó otro material, la regla no escribe: ni crea humo de la
+  nada ni borra a nadie.
+- **Celda que aún no ha leído** (toda la fila de abajo, y de su fila la parte que
+  le queda por delante): `nextCells` está vacía por construcción, así que no dice
+  nada; la verdad está en `cells`, que sí tiene la partícula que vio el `match`.
+  Se escribe el material y el barrido salta esa celda, igual que cuando un cambio
+  escribe las dos mitades (§7.4).
+
+La propia fila estuvo prohibida al principio, porque sin `readYet` era ambigua:
+el barrido la recorre en un sentido que se sortea cada fotograma, así que la
+mitad de las veces la celda ya estaba leída y la otra mitad no, y el mismo dibujo
+daba dos resultados distintos. Con el sentido en la mano la ambigüedad desaparece,
+y es lo que permite que el agua de al lado de una llama se convierta en humo.
+
+`_` fuera de su celda sigue la misma regla: sólo vacía a la partícula que el
+`match` vio.
+
 ---
 
 ## 8. Las reglas, por grupos
@@ -460,7 +517,7 @@ más cercanas a la gravedad (las gotas que saltan):
 
 | Regla | Dibujo | Qué cuenta |
 |---|---|---|
-| `FIRE_DIES_*` (ocho, las primeras) | `?A? / ?F? / ???` → `?_?` | Una llama con agua en **cualquiera** de sus ocho lados se apaga: se consume en el sitio en vez de subir o propagarse |
+| `FIRE_DIES_*` (ocho, las primeras) | `?A? / ?F? / ???` → `?H? / ?_? / ???` | Una llama con agua en **cualquiera** de sus ocho lados se apaga y deja humo en el sitio de la gota: el vapor del apagado |
 | `WATER_PUTS_OUT_ABOVE` | `?F? / ?A? / ???` → `?X? / ?_? / ???` | La gota salta a la celda que la llama acaba de dejar |
 | `WATER_PUTS_OUT_UPPER_LEFT` | `F?? / ?A? / ???` → `X?? / ?_? / ???` | Lo mismo cuando la llama está en la diagonal izquierda |
 | `WATER_PUTS_OUT_UPPER_RIGHT` | `??F / ?A? / ???` → `??X / ?_? / ???` | Y en la derecha |
@@ -472,7 +529,18 @@ desde los ocho lados.
 Y es el fuego quien se apaga, no el agua quien lo mata: **una partícula siempre
 se escribe a sí misma al final de su paso** (salida 3 de §7.2), así que solo la
 llama puede decidir no volver. Si el agua escribiera su celda, el fuego llegaría
-después y escribiría encima, borrando la gota.
+después y escribiría encima. Por eso el vapor también lo escribe la llama: es
+ella la que decide no volver y, en esa misma regla, deja el humo donde estaba la
+gota.
+
+Las ocho formas dejan humo y ninguna inventa una partícula: la gota se convierte
+en una bocanada, y no en dos cosas. La celda de la gota puede estar por encima de
+la llama (ya leída), a su lado (leída o no, según el sentido del fotograma) o por
+debajo (sin leer), y en los tres casos la sustitución es exacta (§7.5): si la gota
+ya se había escurrido, la regla no escribe nada y el humo no aparece. Medido con
+el arnés: en las ocho direcciones la gota más el humo suman uno, la llama
+desaparece y la madera que las rodea no cambia; y tres llamas sobre la misma gota
+dejan **un** humo, no tres.
 
 El salto de la gota va **solo hacia arriba**, y no por capricho: el barrido sube
 fila a fila, así que la llama de encima ya está apagada cuando se mira el agua y
@@ -502,11 +570,22 @@ vez de saltar al hueco que ha dejado la llama.
 | `WOOD_BURNS_LEFT` | `??? / FM? / ???` → `?W?` | Ídem con fuego a la izquierda |
 | `WOOD_BURNS_RIGHT` | `??? / ?MF / ???` → `?W?` | Ídem con fuego a la derecha |
 | `FIRE_FEEDS` | `??? / ?F? / ?M?` → `?l?` | Llama con leña debajo se rejuvenece y se queda quieta |
+| `FIRE_FEEDS_ABOVE` | `?M? / ?F? / ???` → `?l?` | Lo mismo con la leña **encima**: la llama también come hacia arriba |
 | `WOOD_STAYS` | `M → X` | La madera no cae: es el único material que se queda donde lo pones |
 
 Cuatro reglas para "arder" porque **un patrón solo puede modificar su propia
 partícula**: el envejecimiento se escribe desde la madera mirando hacia donde
 está el fuego, no desde el fuego hacia la madera.
+
+Las dos reglas de alimentar son simétricas, y no es un detalle: sin
+`FIRE_FEEDS_ABOVE` el fuego **sólo comía de abajo**. Una llama encendida bajo un
+tronco no tenía entonces leña que comer —arriba estaba la madera, que además le
+tapaba el ascenso— ni sitio al que subir, así que se gastaba en el sitio y se
+convertía en humo antes de que la madera acabara de arder. Medido con el arnés,
+un tronco de 3x4 encendido por debajo no se quemaba; con las dos reglas arde igual
+que encendido por arriba (las 12 celdas del tronco pasan por llama y no queda
+madera), y la llama sigue subiendo por dentro de la madera como si la hubieran
+encendido desde el otro lado.
 
 `WOOD_STAYS` escribe `X` (la partícula) y **no** `M` (el material): con `M` la
 madera renacería con la vida a tope en cada generación y no se gastaría nunca.
@@ -677,15 +756,18 @@ motor.
 Una línea en `Material.LIST`:
 
 ```java
-new Material('P', 40, true, 5, 3, "#ffffff", "#888888"),
+new Material('P', 40, true, 5, 3, 1, "#ffffff", "#888888"),
 ```
 
 Glifo, tamaño de la banda, si tiene vida, en cuántos valores puede nacer, **cada
-cuántos pasos del mundo da un paso** y las paradas de color. La banda, la tabla
+cuántos pasos del mundo da un paso**, **cuántos de esos turnos tarda en gastar un
+valor** y las paradas de color. La banda, la tabla
 inversa, el botón del selector y la tecla salen solos. Si no se porta de forma
 especial, cae por gravedad como la arena. El reloj es lo que lo hace rápido o
 lento **frente a los demás materiales**: 1 es un paso en cada paso, 9 es uno de
-cada nueve y 12 es el más lento de todos, el de la arena. Para acelerar o frenar el
+cada nueve y 22 es hoy el más lento, el de la madera y el fuego. La vejez es lo que
+lo hace durar más de lo que mide su banda: con 1 la vida es el ancho de la banda, y
+con 13 una banda de 8 valores sube 79 filas. Para acelerar o frenar el
 mundo entero no se toca el reloj, se toca `ENGINE_MULTIPLIER`, y lo único que hay
 que cuidar es que los turnos del material no caigan siempre en fotogramas del mismo
 lado (ver "El reloj de cada material") y que `ENGINE_MULTIPLIER × FRAMES_PER_PAINT`
@@ -764,8 +846,8 @@ Comprobaciones que han demostrado ser útiles (todas encontraron algo alguna vez
 | Centroide del montón | No se ladea (la alternancia del barrido) |
 | La madera no cae | `WOOD_STAYS` |
 | El fuego se apaga | Un fuego suelto no es inmortal |
-| El fuego sube un tercio de pantalla | El ancho de su banda |
-| El humo llega al techo | El ancho de la banda del humo |
+| El fuego sube un tercio de pantalla | El ancho por la vejez (10 × 3 = 30 filas) |
+| El humo llega al techo | El ancho por la vejez (8 × 13 = 79 filas) |
 | El agua apaga el fuego | Las ocho reglas de apagado |
 | El agua no se pierde al apagar | 25 gotas entran, 25 gotas salen |
 | Un fuego no cruza una mancha de agua | Que la llama no rodee la gota |
@@ -777,7 +859,8 @@ Comprobaciones que han demostrado ser útiles (todas encontraron algo alguna vez
 | El agua cae doce veces más rápido | Las mismas 73 filas en 19 fotogramas, frente a los 217 de la arena |
 | El reloj no pierde partículas | 330 granos entran, 330 salen; ídem con las gotas |
 | El reloj no ladea las pilas | Bloque de 11x30 con reloj 12 y multiplicador 4: centroide a 0,14 celdas del centro, 17 de alto y 37 de ancho; con el cociente par (12 y multiplicador 2) se va 5,4 y se aplana (13 y 42) |
-| El fuego y el humo suben lo mismo | 29 filas la llama (banda 30) y 57 el humo (hasta el techo) |
+| El fuego y el humo suben lo mismo | 25 filas la llama y el humo hasta la fila 0, medido con las bandas comprimidas (10 y 8 valores) |
+| Comprimir una banda no cambia la física | Tronco de 12 celdas quemado entero desde arriba (4203 pasos) y desde abajo (2927), con M=0 en los dos; conservación de arena y agua a 720 pasos; el grano se hunde en 301 pasos |
 | El agua se aplana y la arena no | Cien gotas vertidas en un punto: lámina de 2 de alto en 100 columnas, desnivel 1; la misma arena deja un cono de 8 |
 | El chorro sale recto | Con un grano cada dos turnos del material, el agua y la arena caen en una columna de 1 celda de ancho; con uno por turno, en 3 |
 | La arena se hunde sin marca | Nueve granos sobre un charco de 108 gotas: 60,08 pasos por fila (6,7 fotogramas frente a 1,3 en el aire), arena 9 → 9, gotas 108 → 108 y ninguna gota atrapada en el tramo de espera |
@@ -808,7 +891,10 @@ Errores que ya se cometieron, con su síntoma, para no repetirlos:
 | Un material va a la mitad de velocidad de la que se le supone | Contar su reloj en fotogramas cuando el mundo da varios pasos por fotograma | El reloj de un material se cuenta en **pasos** (`stepCounter`); el fotograma es solo del golpe y del pintado |
 | Al subir `ENGINE_MULTIPLIER` el chorro se abre | El pincel medido en fotogramas y el material en pasos: al subir el multiplicador el grano nace pegado al anterior | Medir el pincel en los mismos pasos que el material (`stepCounter % (stepPeriod * 2)`), así el hueco se mantiene con cualquier multiplicador |
 | El chorro se abre en cono de tres columnas | El pincel suelta un grano por turno del material: nace en la celda que el anterior acaba de dejar y la generación anterior todavía lo ocupa | Gotear cada **dos** turnos del material (`stepCounter % (stepPeriod * 2)`), que deja un turno de hueco |
-| El chorro de agua se ve como una línea discontinua congelada en el aire | El producto `ENGINE_MULTIPLIER × FRAMES_PER_PAINT` es par y las gotas están separadas dos celdas: todas las imágenes pintadas muestran la cadena en filas de la misma paridad | Que el producto sea **impar**: 9 pasos por fotograma con pintado de uno en uno, o 9 con pintado de tres en tres |
+| Al comprimir una banda, el material se muere a media altura | Se bajó el ancho sin subir la vejez: la vida en filas es ancho × vejez | Subir la vejez en la misma proporción; el reloj no compra filas, sólo estira el tiempo |
+| Al comprimir una banda, el material se vuelve más rápido | Se bajó el reloj para compensar, y el reloj mide los pasos entre turnos: bajarlo acelera | Para que queme más despacio se sube el reloj, y para que dure lo mismo se toca la vejez |
+| Al subir la vejez, el material parpadea en blanco | El fantasma del último valor dura un escalón entero, no un turno | Contar con ello al elegir el ancho: con 13 turnos de vejez, el humo es casi blanco los últimos 13 de 79 |
+| Una banda corta hace que `o` no cree hijos | El reparto `(last - value) / copies` da 0 cuando la banda es menor que el número de copias | El fuego necesita al menos 8 valores para propagarse con cuatro `o` |
 
 El número de `o` no cambia el ritmo: cada `o` tira un dado con tantas caras como
 `o` hay, así que el número esperado de hijos por generación es siempre **uno**.
@@ -822,9 +908,11 @@ quitársela —que es lo que hace el reparto de `o`— la apaga mucho antes.
 
 ## 13. Pendientes e ideas
 
-- **El calor del agua**: hoy la gota apaga la llama y sigue siendo agua; no se
-  calienta ni se convierte en vapor. El humo que sube es el del fuego, no el del
-  agua que lo apagó.
+- **El calor del agua**: ya no es un pendiente. La gota que apaga una llama se
+  gasta y deja humo en su sitio en las ocho formas del apagado (§8), así que el
+  vapor que sube también es el del agua que apagó el fuego. Lo que sigue sin
+  existir es un estado intermedio: la gota no se calienta, se convierte en humo
+  en el mismo paso.
 - **Densidad de verdad**: la arena ya se hunde en el agua al ritmo que marca la
   banda del agua, pero solo con agua: en la madera o en el humo se queda encima,
   porque ninguna de las dos bandas tiene un tramo que sirva de contador.
@@ -836,3 +924,10 @@ quitársela —que es lo que hace el reparto de `o`— la apaga mucho antes.
 - **El ciclo `V`**: hoy no lo usa ninguna regla (la gota que sube pasó a `B`), pero
   sigue disponible para materiales que se transforman en bucle (hielo ↔ agua, por
   ejemplo), donde interesa que el ciclo empiece siempre en el mismo valor.
+- **El fantasma de las bandas cortas**: con una vejez alta, el último valor se
+  queda casi blanco un escalón entero. Si molesta en pantalla, el arreglo no es
+  alargar la banda: es pintar el último valor con la rampa normal y reservar el
+  blanco para un valor que dure un solo turno.
+- **Queda sitio**: las cinco bandas ocupan 101 de los 255 valores, así que hay
+  espacio para cuatro materiales más del tamaño del ácido sin volver a tocar
+  ninguna.

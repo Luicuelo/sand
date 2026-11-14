@@ -103,10 +103,11 @@ java --module-path $PATH_TO_FX --add-modules javafx.controls,javafx.graphics -cp
    - Ages the materials with life and applies the rules that transform them
 
 4. **[Material.java](src/principal/Material.java)** - Materials and palette
-   - One entry per material: glyph, size of its band of values, clock and colours
+   - One entry per material: glyph, size of its band of values, clock, age and colours
    - Lays out the bands from value 1 in the order of the list
    - Holds the value to glyph table the rules ask for
    - Holds the clock of each material: how many steps of the world pass between two steps
+   - Holds the age of each material: how many of those steps one value of its band takes
    - Walks the band for the life glyphs (`V`, `W`, `r`, `l`) and draws a value again (`B`)
 
 5. **[Sand.java](src/sand/Sand.java)** - The original engine, in its own package
@@ -141,7 +142,7 @@ are written with the same glyphs:
 | `x` | same as `X` | one of these cells keeps the particle, drawn by chance |
 | `o` | same as `X` | each of these cells rolls its own dice, so several can win: the winners are new particles that share the life the original has left, and nothing is born when there is nothing left to share |
 | `V` | same as `X` | the particle one value older, wrapping back at the end |
-| `W` | same as `X` | the particle one value older, staying at the last one |
+| `W` | same as `X` | the particle one value older, staying at the last one, and only on the turns its age is due |
 | `B` | same as `X` | the particle with a value drawn again among the first ones of its band, like a new particle |
 | `r` | same as `X` | the particle with half of the life it has left |
 | `l` | same as `X` | the particle with half of the life it has spent |
@@ -162,26 +163,38 @@ A cell holds a palette value, so a material and its age travel together: the
 position inside the band is the life of the particle. The bands are laid out
 from value 1 in the order of `Material.LIST`, and value 0 is empty space.
 
-| Glyph | Material | Values | Life | Born in | Clock | Colours |
-|-------|----------|--------|------|---------|-------|---------|
-| `S` | sand | 1-25 | no | 1-25 | 12 | pale yellow to golden ochre |
-| `A` | water | 26-82 | no (the tail of the band is the wait) | 26-33 | 1 | mid blue to light blue, and the wait flat |
-| `M` | wood | 83-112 | yes | 83-91 | 9 | light wood to dark wood |
-| `F` | fire | 113-142 | yes | 113-118 | 9 | pale yellow to orange to red |
-| `H` | smoke | 143-222 | yes | 143-148 | 9 | dark grey to light grey |
+| Glyph | Material | Values | Born in | Clock | Age | Life | Reach | Colours |
+|-------|----------|--------|---------|-------|-----|------|-------|---------|
+| `S` | sand | 1-10 | 1-10 | 12 | 1 | no | no | pale yellow to golden ochre |
+| `A` | water | 11-67 | 11-18 | 1 | 1 | no: the tail of the band is the wait, 49-56 steps | no | mid blue to light blue, and the wait flat |
+| `M` | wood | 68-83 | 68-71 | 22 | 1 | 13-16 turns | never moves | light wood to dark wood |
+| `F` | fire | 84-93 | 84-86 | 22 | 3 | 24-30 turns | 24-30 rows, a third of the screen | pale yellow to orange to red |
+| `H` | smoke | 94-101 | 94-95 | 9 | 13 | 91-104 turns | the 75 rows of the canvas | dark grey to light grey |
+
+The last two columns are the same number read twice, and both come out of the
+first four:
+
+- **Life** is the values of the band times the age, counted in turns, minus what
+  a particle spends being born: the spread is life already gone, which is why the
+  fire starts up to two values late and the smoke one.
+- **Reach** is that life counted in rows instead of turns, because climbing costs
+  a turn per row. A particle with an age of one spends a value on every row it
+  climbs, so its reach is its size; with an age of thirteen it climbs thirteen
+  rows for every value it spends, and eight values carry it across the canvas.
+
+That is the whole decoupling: the band is no longer the height, the age is what
+turns values into turns, and a material can be made short and slow without
+touching a single rule. The five bands take 101 of the 255 values of the palette,
+so there is room for five or six more before a new one has to divide a band.
 
 Every material is created at a random value among the first ones of its band
 (`spread` in `Material.LIST`), so a pile is not a flat sheet of a single colour.
 The materials with life spread only over the first few values, because there the
 value is the age and the rest is life spent at birth. A material with life then
-walks towards the last value: that is what `V` and `W` do, and the size of the band
-is how long it lasts. Since climbing costs one value per row and the canvas is 75
-rows tall, the width of each band is a distance on the screen: the fire gets 30
-values, a third of the height, and the smoke gets 80 so that it really does reach
-the ceiling.
-The last value of a material with life is painted almost white, so a particle
-that has spent its life is practically invisible while it waits for the rule
-that transforms it.
+walks towards the last value: that is what `V` and `W` do, and `W` only spends a
+value on the turns the age is due. The last value of a material with life is
+painted almost white, so a particle that has spent its life is practically
+invisible while it waits for the rule that transforms it.
 
 The water is the one band with two jobs. Its first eight values are the shades a
 drop is born with; from there to the end the band is the **wait** of a grain of
@@ -205,10 +218,12 @@ or slower at once, without touching a single rule:
 - the **water** has a clock of 1, so it steps on every step (540 a second);
 - the **sand** has a clock of 12, so it steps one step in twelve (45 a second): it
   falls and spreads at a twelfth of the speed of the liquid;
-- the **wood**, the **fire** and the **smoke** have a clock of 9, and the ones with
-  life keep the pace of their lives, which are counted in steps: they are stepped
-  60 times a second, once per frame, and each turn is one row they climb or one
-  step older.
+- the **wood** and the **fire** have a clock of 22, and they share it on purpose:
+  a flame climbs one row for every value the wood spends, so the burn front stays
+  together; the **smoke** has a clock of 9;
+- the ones with life are stepped once every age turns, and each turn is one row
+  they climb or one value they spend: the fire ages more than four times faster
+  than the smoke, and the smoke reaches the ceiling with a band of eight.
 
 With the multiplier at 9 the world takes nine steps per frame: the water falls
 nine cells per frame and the sand one cell every frame and a third. A grain waits
@@ -233,7 +248,10 @@ one every two (four and a half per frame). The turn in
 between is what leaves the grain room to fall: painted on every turn, a grain is
 born on the cell the one before has just left, the previous generation still
 shows it there, so it slides sideways in the air and the jet opens into a cone.
-With the gap the jet is one cell wide instead of three.
+With the gap the jet is one cell wide instead of three. The same gap is why the
+wood and the fire, with a clock of 22, are painted one particle every 44 steps:
+they are solids, they do not fall, so the holes left while dragging the mouse
+close on their own as the brush passes again.
 
 The sweep swaps sides **on every frame, not on every step**, so what matters is in
 which frames the turns of a material land: a grain is due one step in twelve and a
@@ -243,8 +261,10 @@ would read its rows in the same direction and push its pile sideways: alternatin
 per step, or with an even quotient between clock and multiplier, a block of sand
 ends up 5.4 cells to one side and visibly flatter (13 rows instead of 17 and 42
 columns instead of 37). Materials faster than the frame (the water, with 1) are
-stepped several times per frame and see both sides anyway; the ones with life,
-with 9, land on every frame and see both too.
+stepped several times per frame and see both sides anyway; the smoke, with 9,
+lands on every frame and sees both too, and the wood and the fire, with 22, land
+one turn every two frames and a half (frames 2, 4, 7, 9, 12...), so they also
+take both directions.
 
 The multiplier is **odd** on purpose, and so must be the product with
 `FRAMES_PER_PAINT`. The water falls one cell per step, nine per frame, and the
@@ -269,7 +289,7 @@ gravity that any particle obeys.
 | Fire ends | `f` | `H` | the flame has spent its life and becomes smoke |
 | Smoke ends | `h` | `_` | the smoke has spent its life and disappears |
 | Wood ends | `m` | `F` | the wood has spent its life and catches fire |
-| Wood burns | fire on any of its four sides | `?W?` | the wood walks towards its end, one step per generation |
+| Wood burns | fire on any of its four sides | `?W?` | the wood walks towards its end, one value per turn |
 | Fire feeds | `???`<br>`?F?`<br>`?M?` | `???`<br>`?l?`<br>`???` | there is wood below: the flame recovers half of the life it has spent, which is what keeps it alive while there is fuel |
 | Wood stays | `M` | `X` | wood never falls, and it keeps its value instead of being born again |
 | Fire rises | `?_?`<br>`?F?`<br>`???` | `?W?`<br>`?_?`<br>`???` | free space above: the flame rises one row |

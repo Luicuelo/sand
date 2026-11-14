@@ -283,7 +283,7 @@ class WorldRenderer {
 		boolean rightToLeft = (frameCounter & 1) == 0;
 		for (int y = 0; y < rows; y++) {
 			for (int i = 0; i < cols; i++) {
-				stepCell(rightToLeft ? cols - 1 - i : i, y);
+				stepCell(rightToLeft ? cols - 1 - i : i, y, rightToLeft);
 			}
 		}
 
@@ -308,17 +308,20 @@ class WorldRenderer {
 	 * or without it.
 	 * </p>
 	 *
-	 * @param x column of the cell
-	 * @param y row of the cell
+	 * @param x           column of the cell
+	 * @param y           row of the cell
+	 * @param rightToLeft true when the pass is reading the rows from right to left,
+	 *                    which the rules need in order to know which neighbours
+	 *                    still have their turn ahead
 	 */
-	private void stepCell(int x, int y) {
+	private void stepCell(int x, int y, boolean rightToLeft) {
 		if (nextCells[y][x] != 0)
 			return;
 		int value = cells[y][x];
 		if (value == 0)
 			return;
 		if (Material.isDue(value, stepCounter))
-			rules.stepParticle(x, y, cells, nextCells);
+			rules.stepParticle(x, y, cells, nextCells, rightToLeft, Material.isAgingDue(value, stepCounter));
 		else
 			nextCells[y][x] = value;
 	}
